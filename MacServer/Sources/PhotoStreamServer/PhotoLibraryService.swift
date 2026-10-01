@@ -46,11 +46,76 @@ final class PhotoLibraryService {
         } else {
             start = 0
         }
-        let end = min(assets.count, start + max(1, min(limit, 100)))
+        let end = min(assets.count, start + max(1, min(limit, 200)))
         let slice = assets[start..<end]
         let items = slice.map(Self.summary(for:))
         let next = end < assets.count ? String(end) : nil
         return AssetPage(items: items, nextCursor: next, totalCount: assets.count)
+    }
+
+    func timeline() -> TimelineResponse {
+        let calendar = Calendar.current
+        var buckets: [TimelineBucket] = []
+        var years: [TimelineYear] = []
+
+        var currentYear: Int?
+        var currentMonth: Int?
+        var bucketStart = 0
+        var bucketCount = 0
+        var yearStart = 0
+        var yearCount = 0
+
+        func flushBucket() {
+            guard let y = currentYear, let m = currentMonth, bucketCount > 0 else { return }
+            buckets.append(TimelineBucket(year: y, month: m, startIndex: bucketStart, count: bucketCount))
+        }
+        func flushYear() {
+            guard let y = currentYear, yearCount > 0 else { return }
+            years.append(TimelineYear(year: y, startIndex: yearStart, count: yearCount))
+        }
+
+        for (index, asset) in assets.enumerated() {
+            let y: Int
+            let m: Int
+            if let date = asset.creationDate {
+                y = calendar.component(.year, from: date)
+                m = calendar.component(.month, from: date)
+            } else {
+                // Sentinel for Amazon-style "No Date" rail label.
+                y = 0
+                m = 0
+            }
+
+            if currentYear == nil {
+                currentYear = y
+                currentMonth = m
+                bucketStart = index
+                yearStart = index
+            }
+
+            if y != currentYear {
+                flushBucket()
+                flushYear()
+                currentYear = y
+                currentMonth = m
+                bucketStart = index
+                bucketCount = 0
+                yearStart = index
+                yearCount = 0
+            } else if m != currentMonth {
+                flushBucket()
+                currentMonth = m
+                bucketStart = index
+                bucketCount = 0
+            }
+
+            bucketCount += 1
+            yearCount += 1
+        }
+        flushBucket()
+        flushYear()
+
+        return TimelineResponse(buckets: buckets, years: years, totalCount: assets.count)
     }
 
     func asset(id: String) -> PHAsset? {

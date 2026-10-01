@@ -1,16 +1,19 @@
 import UIKit
 
-final class GridViewController: UIViewController, UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDataSourcePrefetching, UIScrollViewDelegate {
+final class GridViewController: UIViewController, UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDataSourcePrefetching, UIScrollViewDelegate, TimelineGrabberDelegate {
     private let client: PhotoStreamAPIClient
     private let loader: ThumbLoader
     private var assets: [AssetSummary] = []
+    /// Library index of `assets[0]` (supports timeline jumps into the middle).
+    private var windowStart: Int = 0
     private var nextCursor: String? = nil
     private var totalCount: Int = 0
     private var isLoadingPage = false
+    private var isJumping = false
     private var collectionView: UICollectionView!
     private let scrubber = UILabel()
-    private var lastVelocity: CGFloat = 0
-    private let velocityThreshold: CGFloat = 2.2
+    private let grabber = TimelineGrabberView()
+    private var lastPauseBucketID: String?
 
     init(client: PhotoStreamAPIClient) {
         self.client = client
@@ -51,6 +54,10 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         scrubber.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(scrubber)
 
+        grabber.delegate = self
+        grabber.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(grabber)
+
         NSLayoutConstraint.activate([
             collectionView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -60,6 +67,10 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
             scrubber.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
             scrubber.widthAnchor.constraint(greaterThanOrEqualToConstant: 140),
             scrubber.heightAnchor.constraint(equalToConstant: 28),
+            grabber.topAnchor.constraint(equalTo: view.topAnchor),
+            grabber.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            grabber.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            grabber.widthAnchor.constraint(equalToConstant: 110),
         ])
 
         updateCellMetrics()
@@ -90,20 +101,35 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
             let info = try await client.info()
             totalCount = info.assetCount
             title = "\(info.hostName) · \(info.assetCount)"
+            async let timelineTask: Void = loadTimeline()
             try await loadMoreIfNeeded(force: true)
+            await timelineTask
             refreshVisibleThumbs(settle: true)
         } catch {
             presentError(error)
         }
     }
 
+    private func loadTimeline() async {
+        do {
+            let timeline = try await client.timeline()
+            grabber.configure(timeline: timeline)
+        } catch {
+            // Grabber stays hidden if timeline fails; grid still works.
+        }
+    }
+
     private func loadMoreIfNeeded(force: Bool = false) async throws {
-        if isLoadingPage { return }
+        if isLoadingPage || isJumping { return }
         if !force, nextCursor == nil, !assets.isEmpty { return }
         isLoadingPage = true
         defer { isLoadingPage = false }
-        let page = try await client.assets(cursor: nextCursor, limit: 40)
+        let requestCursor = nextCursor
+        let page = try await client.assets(cursor: requestCursor, limit: 40)
         let start = assets.count
+        if assets.isEmpty {
+            windowStart = Int(requestCursor ?? "0") ?? 0
+        }
         assets.append(contentsOf: page.items)
         nextCursor = page.nextCursor
         totalCount = page.totalCount
@@ -113,10 +139,38 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         }
     }
 
+    /// Replace the grid window at a library index (timeline jump / pause preview).
+    private func jumpToLibraryIndex(_ startIndex: Int, prefetchThumbs: Bool) async {
+        if isJumping { return }
+        isJumping = true
+        defer { isJumping = false }
+        do {
+            loader.cancelAll()
+            let page = try await client.assets(cursor: String(startIndex), limit: 60)
+            windowStart = startIndex
+            assets = page.items
+            nextCursor = page.nextCursor
+            totalCount = page.totalCount
+            collectionView.reloadData()
+            collectionView.setContentOffset(.zero, animated: false)
+            updateScrubberLabel()
+            grabber.syncProgress(toLibraryIndex: startIndex)
+            if prefetchThumbs {
+                refreshVisibleThumbs(settle: true)
+            }
+        } catch {
+            presentError(error)
+        }
+    }
+
     private func presentError(_ error: Error) {
         let alert = UIAlertController(title: "Error", message: error.localizedDescription, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
+    }
+
+    private func libraryIndex(forItem item: Int) -> Int {
+        windowStart + item
     }
 
     // MARK: Data source
@@ -149,7 +203,6 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
     }
 
     func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
-        // Metadata-only prefetch via willDisplay; do not prefetch thumbs during flick.
         let maxIndex = indexPaths.map(\.item).max() ?? 0
         if maxIndex > assets.count - 30 {
             Task { try? await loadMoreIfNeeded() }
@@ -161,14 +214,16 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
     // MARK: Scroll / flick
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        let velocity = abs(scrollView.panGestureRecognizer.velocity(in: scrollView).y) / 1000
-        lastVelocity = max(velocity, abs(scrollView.contentOffset.y - (scrollView.layer.presentation()?.bounds.origin.y ?? scrollView.contentOffset.y)) )
-        // Prefer pan velocity when dragging; during deceleration estimate via offset changes is noisy —
-        // use isDecelerating + pan velocity.
         let panV = abs(scrollView.panGestureRecognizer.velocity(in: view).y)
         let fast = panV > 1200 || (scrollView.isDecelerating && panV > 400)
         Task { loader.setFastScrolling(fast) }
         updateScrubber(visible: fast || scrollView.isDragging || scrollView.isDecelerating)
+        if fast || scrollView.isDecelerating {
+            grabber.showGrabber(animated: true)
+        }
+        if let mid = midVisibleItem() {
+            grabber.syncProgress(toLibraryIndex: libraryIndex(forItem: mid))
+        }
         if !fast && !scrollView.isDecelerating && !scrollView.isDragging {
             refreshVisibleThumbs(settle: false)
         }
@@ -183,6 +238,7 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
             loader.setFastScrolling(false)
             refreshVisibleThumbs(settle: true)
             hideScrubberSoon()
+            grabber.scheduleHide()
         }
     }
 
@@ -190,13 +246,19 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         loader.setFastScrolling(false)
         refreshVisibleThumbs(settle: true)
         hideScrubberSoon()
+        grabber.scheduleHide()
+    }
+
+    private func midVisibleItem() -> Int? {
+        let paths = collectionView.indexPathsForVisibleItems.sorted { $0.item < $1.item }
+        guard !paths.isEmpty else { return nil }
+        return paths[paths.count / 2].item
     }
 
     private func refreshVisibleThumbs(settle: Bool) {
         let paths = collectionView.indexPathsForVisibleItems.sorted { $0.item < $1.item }
         guard !paths.isEmpty else { return }
         var ids = paths.map { assets[$0.item].id }
-        // 1-row buffer (2 cells)
         if let first = paths.first?.item, first > 0 {
             ids.insert(assets[max(0, first - 2)].id, at: 0)
         }
@@ -225,22 +287,66 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
     }
 
     private func updateScrubberLabel() {
-        guard let mid = collectionView.indexPathsForVisibleItems.sorted(by: { $0.item < $1.item }).dropFirst(
-            max(0, collectionView.indexPathsForVisibleItems.count / 2 - 1)
-        ).first else {
+        guard let mid = midVisibleItem() else {
             scrubber.text = "  —  "
             return
         }
-        let asset = assets[mid.item]
+        let asset = assets[mid]
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         let date = formatter.string(from: asset.createdAt)
-        scrubber.text = "  \(date) · \(mid.item + 1)/\(max(totalCount, assets.count))  "
+        let absolute = libraryIndex(forItem: mid) + 1
+        scrubber.text = "  \(date) · \(absolute)/\(max(totalCount, absolute))  "
     }
 
     private func hideScrubberSoon() {
         UIView.animate(withDuration: 0.25, delay: 0.8) {
             self.scrubber.alpha = 0
+        }
+    }
+
+    // MARK: Timeline grabber
+
+    func timelineGrabberDidBeginScrub(_ grabber: TimelineGrabberView) {
+        lastPauseBucketID = nil
+        loader.setFastScrolling(true)
+        updateScrubber(visible: true)
+    }
+
+    func timelineGrabber(_ grabber: TimelineGrabberView, didScrubTo bucket: TimelineBucket, progress: CGFloat) {
+        if bucket.year <= 1 {
+            scrubber.text = "  No Date  "
+        } else {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "MMM yyyy"
+            var comps = DateComponents()
+            comps.year = bucket.year
+            comps.month = bucket.month
+            comps.day = 1
+            let date = Calendar.current.date(from: comps) ?? Date()
+            scrubber.text = "  \(formatter.string(from: date)) · \(bucket.startIndex + 1)/\(totalCount)  "
+        }
+        scrubber.alpha = 1
+    }
+
+    func timelineGrabber(_ grabber: TimelineGrabberView, didPauseAt bucket: TimelineBucket) {
+        guard lastPauseBucketID != bucket.id else { return }
+        lastPauseBucketID = bucket.id
+        Task {
+            await jumpToLibraryIndex(bucket.startIndex, prefetchThumbs: true)
+        }
+    }
+
+    func timelineGrabber(_ grabber: TimelineGrabberView, didEndScrubAt bucket: TimelineBucket) {
+        Task {
+            if lastPauseBucketID != bucket.id {
+                await jumpToLibraryIndex(bucket.startIndex, prefetchThumbs: true)
+            } else {
+                loader.setFastScrolling(false)
+                refreshVisibleThumbs(settle: true)
+            }
+            lastPauseBucketID = nil
+            hideScrubberSoon()
         }
     }
 }

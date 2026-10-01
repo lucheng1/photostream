@@ -96,6 +96,46 @@ public struct PairingResponse: Codable, Sendable {
     }
 }
 
+public struct TimelineBucket: Codable, Sendable, Identifiable {
+    public var id: String { "\(year)-\(month)" }
+    public var year: Int
+    public var month: Int
+    public var startIndex: Int
+    public var count: Int
+
+    public init(year: Int, month: Int, startIndex: Int, count: Int) {
+        self.year = year
+        self.month = month
+        self.startIndex = startIndex
+        self.count = count
+    }
+}
+
+public struct TimelineYear: Codable, Sendable, Identifiable {
+    public var id: Int { year }
+    public var year: Int
+    public var startIndex: Int
+    public var count: Int
+
+    public init(year: Int, startIndex: Int, count: Int) {
+        self.year = year
+        self.startIndex = startIndex
+        self.count = count
+    }
+}
+
+public struct TimelineResponse: Codable, Sendable {
+    public var buckets: [TimelineBucket]
+    public var years: [TimelineYear]
+    public var totalCount: Int
+
+    public init(buckets: [TimelineBucket], years: [TimelineYear], totalCount: Int) {
+        self.buckets = buckets
+        self.years = years
+        self.totalCount = totalCount
+    }
+}
+
 public struct APIErrorBody: Codable, Sendable {
     public var error: String
 

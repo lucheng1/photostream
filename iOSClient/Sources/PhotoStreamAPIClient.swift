@@ -52,6 +52,11 @@ actor PhotoStreamAPIClient {
         return try decoder.decode(AssetPage.self, from: data)
     }
 
+    func timeline() async throws -> TimelineResponse {
+        let data = try await get(url: url("v1", "timeline"))
+        return try JSONDecoder().decode(TimelineResponse.self, from: data)
+    }
+
     func thumbTask(assetID: String, width: Int, height: Int, scale: Int) -> URLSessionDataTask {
         var components = URLComponents(url: thumbURL(assetID: assetID), resolvingAgainstBaseURL: false)!
         components.queryItems = [

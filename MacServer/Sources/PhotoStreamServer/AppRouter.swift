@@ -40,6 +40,8 @@ final class AppRouter: @unchecked Sendable {
             return await info()
         case ("GET", "/v1/assets"):
             return await assets(request)
+        case ("GET", "/v1/timeline"):
+            return await timeline()
         default:
             if method == "GET", path.hasPrefix("/v1/assets/"), path.hasSuffix("/thumb") {
                 return await thumb(request, path: path)
@@ -79,6 +81,11 @@ final class AppRouter: @unchecked Sendable {
         let cursor = request.query["cursor"]
         let page = await MainActor.run { library.page(cursor: cursor, limit: limit) }
         return .json(page)
+    }
+
+    private func timeline() async -> HTTPResponse {
+        let response = await MainActor.run { library.timeline() }
+        return .json(response)
     }
 
     private func assetID(from path: String, suffix: String) -> String? {
