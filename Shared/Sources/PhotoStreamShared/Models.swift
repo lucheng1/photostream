@@ -38,6 +38,8 @@ public struct AssetSummary: Codable, Sendable, Identifiable {
     public var pixelWidth: Int
     public var pixelHeight: Int
     public var isFavorite: Bool
+    /// Duration in seconds for videos; 0 for photos.
+    public var duration: Double
 
     public init(
         id: String,
@@ -45,7 +47,8 @@ public struct AssetSummary: Codable, Sendable, Identifiable {
         mediaType: MediaKind,
         pixelWidth: Int,
         pixelHeight: Int,
-        isFavorite: Bool
+        isFavorite: Bool,
+        duration: Double = 0
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -53,6 +56,7 @@ public struct AssetSummary: Codable, Sendable, Identifiable {
         self.pixelWidth = pixelWidth
         self.pixelHeight = pixelHeight
         self.isFavorite = isFavorite
+        self.duration = duration
     }
 }
 

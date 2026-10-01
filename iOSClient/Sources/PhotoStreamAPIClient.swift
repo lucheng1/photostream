@@ -84,6 +84,17 @@ actor PhotoStreamAPIClient {
         return try await get(url: url("v1", "assets", encoded, "full"))
     }
 
+    /// URL + auth headers for AVPlayer streaming of `/v1/assets/{id}/video`.
+    func videoPlayback(assetID: String) -> (url: URL, headers: [String: String]) {
+        let encoded = AssetIDCoding.encode(assetID)
+        let videoURL = url("v1", "assets", encoded, "video")
+        var headers: [String: String] = [:]
+        if let token {
+            headers[PhotoStreamConstants.authHeader] = token
+        }
+        return (videoURL, headers)
+    }
+
     private func thumbURL(assetID: String) -> URL {
         url("v1", "assets", AssetIDCoding.encode(assetID), "thumb")
     }

@@ -206,6 +206,18 @@ struct HTTPResponse: Sendable {
         )
     }
 
+    static func video(_ data: Data, contentType: String, status: Int = 200) -> HTTPResponse {
+        HTTPResponse(
+            status: status,
+            headers: [
+                "Content-Type": contentType,
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "no-store",
+            ],
+            body: data
+        )
+    }
+
     func serialize() -> Data {
         let reason: String
         switch status {

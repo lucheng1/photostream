@@ -153,6 +153,10 @@ enum ImageEncoder {
     }
 
     private static func jpegData(from image: CGImage, quality: CGFloat, maxPixel: Int) throws -> Data {
+        try jpegDataPublic(from: image, quality: quality, maxPixel: maxPixel)
+    }
+
+    static func jpegDataPublic(from image: CGImage, quality: CGFloat, maxPixel: Int) throws -> Data {
         let scaled = scale(image, maxPixel: maxPixel)
         let data = NSMutableData()
         guard let dest = CGImageDestinationCreateWithData(

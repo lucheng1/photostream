@@ -10,6 +10,8 @@ struct FolderAsset: Sendable {
     let createdAt: Date
     let pixelWidth: Int
     let pixelHeight: Int
+    let mediaType: MediaKind
+    let duration: Double
 }
 
 /// Ephemeral recursive folder index. Rebuilt on every launch / reload; never persisted.
@@ -75,10 +77,11 @@ final class FolderLibraryService {
             AssetSummary(
                 id: asset.id,
                 createdAt: asset.createdAt,
-                mediaType: .photo,
+                mediaType: asset.mediaType,
                 pixelWidth: asset.pixelWidth,
                 pixelHeight: asset.pixelHeight,
-                isFavorite: false
+                isFavorite: false,
+                duration: asset.duration
             )
         }
         let next = end < assets.count ? String(end) : nil
@@ -98,6 +101,9 @@ enum FolderScanner {
     private static let imageExtensions: Set<String> = [
         "jpg", "jpeg", "png", "heic", "heif", "gif", "tif", "tiff", "webp", "bmp",
     ]
+    private static let videoExtensions: Set<String> = [
+        "mp4", "mov", "m4v", "avi", "mkv",
+    ]
 
     static func scan(rootPath: String) -> [FolderAsset] {
         let root = URL(fileURLWithPath: rootPath, isDirectory: true)
@@ -113,7 +119,9 @@ enum FolderScanner {
         var results: [FolderAsset] = []
         for case let fileURL as URL in enumerator {
             let ext = fileURL.pathExtension.lowercased()
-            guard imageExtensions.contains(ext) else { continue }
+            let isVideo = videoExtensions.contains(ext)
+            let isImage = imageExtensions.contains(ext)
+            guard isVideo || isImage else { continue }
             let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey])
             guard values?.isRegularFile == true else { continue }
 
@@ -122,20 +130,38 @@ enum FolderScanner {
             guard !relative.isEmpty else { continue }
             let id = "folder:" + relative
 
-            let meta = imageMeta(at: fileURL)
-            let created = meta.date
-                ?? (try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+            let createdFallback = (try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
                 ?? .distantPast
 
-            results.append(
-                FolderAsset(
-                    id: id,
-                    fileURL: fileURL,
-                    createdAt: created,
-                    pixelWidth: meta.width,
-                    pixelHeight: meta.height
+            if isVideo {
+                let dims = VideoExporter.dimensions(fileURL: fileURL)
+                let duration = VideoExporter.duration(fileURL: fileURL)
+                results.append(
+                    FolderAsset(
+                        id: id,
+                        fileURL: fileURL,
+                        createdAt: createdFallback,
+                        pixelWidth: dims.0,
+                        pixelHeight: dims.1,
+                        mediaType: .video,
+                        duration: duration
+                    )
                 )
-            )
+            } else {
+                let meta = imageMeta(at: fileURL)
+                let created = meta.date ?? createdFallback
+                results.append(
+                    FolderAsset(
+                        id: id,
+                        fileURL: fileURL,
+                        createdAt: created,
+                        pixelWidth: meta.width,
+                        pixelHeight: meta.height,
+                        mediaType: .photo,
+                        duration: 0
+                    )
+                )
+            }
         }
 
         results.sort { $0.createdAt > $1.createdAt }

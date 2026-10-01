@@ -28,6 +28,7 @@ let package = Package(
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("UniformTypeIdentifiers"),
                 .linkedFramework("Network"),
+                .linkedFramework("AVFoundation"),
             ]
         ),
     ]

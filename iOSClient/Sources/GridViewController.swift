@@ -274,6 +274,17 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         let asset = assets[indexPath.item]
         let thumb = SessionImageCache.shared.thumb(for: asset.id)
             ?? SessionImageCache.shared.thumbFromDisk(for: asset.id)
+
+        if asset.mediaType == .video {
+            let player = VideoPlayerViewController(
+                client: client,
+                assetID: asset.id,
+                placeholder: thumb
+            )
+            present(player, animated: true)
+            return
+        }
+
         let viewer = FullImageViewController(
             client: client,
             browser: self,

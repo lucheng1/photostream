@@ -58,6 +58,9 @@ final class AppRouter: @unchecked Sendable {
             if method == "GET", path.hasPrefix("/v1/assets/"), path.hasSuffix("/full") {
                 return await full(request, path: path, mode: mode)
             }
+            if method == "GET", path.hasPrefix("/v1/assets/"), path.hasSuffix("/video") {
+                return await video(request, path: path, mode: mode)
+            }
             return .json(APIErrorBody(error: "not found"), status: 404)
         }
     }
@@ -165,7 +168,12 @@ final class AppRouter: @unchecked Sendable {
                 return .json(APIErrorBody(error: "not found"), status: 404)
             }
             do {
-                let data = try ImageEncoder.jpegThumbnail(fileURL: asset.fileURL, maxPixel: maxPixel)
+                let data: Data
+                if asset.mediaType == .video {
+                    data = try VideoExporter.thumbnailJPEG(fileURL: asset.fileURL, maxPixel: maxPixel)
+                } else {
+                    data = try ImageEncoder.jpegThumbnail(fileURL: asset.fileURL, maxPixel: maxPixel)
+                }
                 return .jpeg(data)
             } catch {
                 return .json(APIErrorBody(error: error.localizedDescription), status: 500)
@@ -193,8 +201,48 @@ final class AppRouter: @unchecked Sendable {
                 return .json(APIErrorBody(error: "not found"), status: 404)
             }
             do {
-                let data = try ImageEncoder.jpegFull(fileURL: asset.fileURL)
+                let data: Data
+                if asset.mediaType == .video {
+                    // Poster frame for swipe/preview; playback uses /video.
+                    data = try VideoExporter.thumbnailJPEG(fileURL: asset.fileURL, maxPixel: 1920)
+                } else {
+                    data = try ImageEncoder.jpegFull(fileURL: asset.fileURL)
+                }
                 return .jpeg(data)
+            } catch {
+                return .json(APIErrorBody(error: error.localizedDescription), status: 500)
+            }
+        }
+    }
+
+    private func video(_ request: HTTPRequest, path: String, mode: StreamMode) async -> HTTPResponse {
+        guard let id = assetID(from: path, suffix: "/video") else {
+            return .json(APIErrorBody(error: "bad id"), status: 400)
+        }
+        switch mode {
+        case .photos:
+            guard let asset = await MainActor.run(body: { library.asset(id: id) }) else {
+                return .json(APIErrorBody(error: "not found"), status: 404)
+            }
+            guard asset.mediaType == .video else {
+                return .json(APIErrorBody(error: "not a video"), status: 400)
+            }
+            do {
+                let (data, contentType) = try await VideoExporter.data(for: asset)
+                return .video(data, contentType: contentType)
+            } catch {
+                return .json(APIErrorBody(error: error.localizedDescription), status: 500)
+            }
+        case .folder:
+            guard let asset = await MainActor.run(body: { folder.asset(id: id) }) else {
+                return .json(APIErrorBody(error: "not found"), status: 404)
+            }
+            guard asset.mediaType == .video else {
+                return .json(APIErrorBody(error: "not a video"), status: 400)
+            }
+            do {
+                let (data, contentType) = try VideoExporter.data(fileURL: asset.fileURL)
+                return .video(data, contentType: contentType)
             } catch {
                 return .json(APIErrorBody(error: error.localizedDescription), status: 500)
             }

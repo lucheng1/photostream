@@ -74,7 +74,8 @@ final class PhotoLibraryService {
             mediaType: kind,
             pixelWidth: asset.pixelWidth,
             pixelHeight: asset.pixelHeight,
-            isFavorite: asset.isFavorite
+            isFavorite: asset.isFavorite,
+            duration: kind == .video ? asset.duration : 0
         )
     }
 }
