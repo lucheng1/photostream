@@ -6,22 +6,29 @@ protocol FullImageBrowsing: AnyObject {
     func browseLoadPrevious() async
 }
 
-final class FullImageViewController: UIViewController, UIScrollViewDelegate {
+/// Full-screen viewer with Google/Amazon Photos–style interactive paging:
+/// the current photo tracks the finger 1:1 while the next/prev photo slides in
+/// from the opposite edge until release completes or cancels the swipe.
+final class FullImageViewController: UIViewController, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     private let client: PhotoStreamAPIClient
     private weak var browser: FullImageBrowsing?
     private var index: Int
     private var currentID: String
 
-    /// Holds the scroll view; receives drag transforms so the root view's pan
-    /// gesture keeps a stable coordinate space (transforming `view` inverted swipes).
-    private let contentContainer = UIView()
-    private let scrollView = UIScrollView()
-    private let imageView = UIImageView()
+    private let pager = UIView()
+    private let currentScroll = UIScrollView()
+    private let currentImage = UIImageView()
+    private let adjacentScroll = UIScrollView()
+    private let adjacentImage = UIImageView()
+
     private let closeButton = UIButton(type: .system)
     private let spinner = UIActivityIndicatorView(style: .large)
+
     private var loadTask: Task<Void, Never>?
-    private var isTransitioning = false
     private var navPan: UIPanGestureRecognizer!
+    private var isTransitioning = false
+    private var activeDelta: Int = 0 // +1 next (older), -1 prev (newer), 0 none
+    private var dragAxisHorizontal = true
 
     init(
         client: PhotoStreamAPIClient,
@@ -35,7 +42,7 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
         let asset = browser.browseAssets[index]
         self.currentID = asset.id
         super.init(nibName: nil, bundle: nil)
-        imageView.image = placeholder
+        currentImage.image = placeholder
     }
 
     required init?(coder: NSCoder) { nil }
@@ -49,21 +56,15 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
         view.backgroundColor = .black
         view.clipsToBounds = true
 
-        contentContainer.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(contentContainer)
+        pager.clipsToBounds = true
+        pager.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(pager)
 
-        scrollView.delegate = self
-        scrollView.minimumZoomScale = 1
-        scrollView.maximumZoomScale = 5
-        scrollView.bouncesZoom = true
-        scrollView.showsHorizontalScrollIndicator = false
-        scrollView.showsVerticalScrollIndicator = false
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-        contentContainer.addSubview(scrollView)
-
-        imageView.contentMode = .scaleAspectFit
-        imageView.isUserInteractionEnabled = true
-        scrollView.addSubview(imageView)
+        configureZoomScroll(currentScroll, imageView: currentImage)
+        configureZoomScroll(adjacentScroll, imageView: adjacentImage)
+        adjacentScroll.isHidden = true
+        pager.addSubview(adjacentScroll)
+        pager.addSubview(currentScroll)
 
         closeButton.setTitle("Close", for: .normal)
         closeButton.setTitleColor(.white, for: .normal)
@@ -78,41 +79,63 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
 
         let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
         doubleTap.numberOfTapsRequired = 2
-        scrollView.addGestureRecognizer(doubleTap)
+        currentScroll.addGestureRecognizer(doubleTap)
 
         navPan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
         navPan.delegate = self
-        // Prefer nav swipe over scroll-view pan while not zoomed.
-        scrollView.panGestureRecognizer.require(toFail: navPan)
+        currentScroll.panGestureRecognizer.require(toFail: navPan)
         view.addGestureRecognizer(navPan)
 
         NSLayoutConstraint.activate([
-            contentContainer.topAnchor.constraint(equalTo: view.topAnchor),
-            contentContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            contentContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            contentContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            scrollView.topAnchor.constraint(equalTo: contentContainer.topAnchor),
-            scrollView.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
+            pager.topAnchor.constraint(equalTo: view.topAnchor),
+            pager.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            pager.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            pager.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             closeButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
             closeButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor),
         ])
 
-        Task { await loadFull(for: currentID) }
+        Task {
+            await loadFull(for: currentID, into: .current)
+            await prefetchNeighbors()
+        }
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        layoutImage()
+        if !isTransitioning, activeDelta == 0 {
+            currentScroll.frame = pager.bounds
+            adjacentScroll.frame = pager.bounds
+            layoutImage(in: currentScroll, imageView: currentImage)
+        }
     }
 
-    private func layoutImage() {
-        guard let image = imageView.image else { return }
-        let bounds = scrollView.bounds.size
+    private func configureZoomScroll(_ scroll: UIScrollView, imageView: UIImageView) {
+        scroll.delegate = self
+        scroll.minimumZoomScale = 1
+        scroll.maximumZoomScale = 5
+        scroll.bouncesZoom = true
+        scroll.showsHorizontalScrollIndicator = false
+        scroll.showsVerticalScrollIndicator = false
+        scroll.backgroundColor = .black
+        imageView.contentMode = .scaleAspectFit
+        imageView.isUserInteractionEnabled = true
+        scroll.addSubview(imageView)
+    }
+
+    private enum Slot { case current, adjacent }
+
+    private func layoutImage(in scroll: UIScrollView, imageView: UIImageView) {
+        guard let image = imageView.image else {
+            imageView.frame = .zero
+            scroll.contentSize = scroll.bounds.size
+            return
+        }
+        let bounds = scroll.bounds.size
         guard bounds.width > 0, bounds.height > 0 else { return }
+        scroll.zoomScale = 1
         let imageSize = image.size
         let scale = min(bounds.width / imageSize.width, bounds.height / imageSize.height)
         let scaled = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
@@ -122,38 +145,65 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
             width: scaled.width,
             height: scaled.height
         )
-        scrollView.contentSize = bounds
-        scrollView.zoomScale = 1
+        scroll.contentSize = bounds
+        scroll.contentOffset = .zero
     }
 
-    private func loadFull(for id: String) async {
+    private func displayImage(for asset: AssetSummary) -> UIImage? {
+        SessionImageCache.shared.full(for: asset.id)
+            ?? SessionImageCache.shared.thumb(for: asset.id)
+            ?? SessionImageCache.shared.thumbFromDisk(for: asset.id)
+    }
+
+    private func loadFull(for id: String, into slot: Slot) async {
         if let cached = SessionImageCache.shared.full(for: id) {
-            guard currentID == id else { return }
-            imageView.image = cached
-            layoutImage()
+            await MainActor.run {
+                applyLoaded(image: cached, id: id, into: slot)
+            }
             return
         }
-        spinner.startAnimating()
+        if slot == .current {
+            await MainActor.run { spinner.startAnimating() }
+        }
         do {
             let data = try await client.fullImage(assetID: id)
-            guard currentID == id else { return }
             let image = UIImage(data: data)
             if let image {
                 SessionImageCache.shared.setFull(image, for: id)
-                imageView.image = image
-                layoutImage()
+                await MainActor.run {
+                    applyLoaded(image: image, id: id, into: slot)
+                }
             }
         } catch {
-            // Keep placeholder / prior image
+            // Keep placeholder
         }
-        if currentID == id {
-            spinner.stopAnimating()
+        if slot == .current {
+            await MainActor.run {
+                if currentID == id { spinner.stopAnimating() }
+            }
         }
     }
 
-    func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
+    private func applyLoaded(image: UIImage, id: String, into slot: Slot) {
+        switch slot {
+        case .current:
+            guard currentID == id else { return }
+            currentImage.image = image
+            layoutImage(in: currentScroll, imageView: currentImage)
+        case .adjacent:
+            adjacentImage.image = image
+            layoutImage(in: adjacentScroll, imageView: adjacentImage)
+        }
+    }
+
+    func viewForZooming(in scrollView: UIScrollView) -> UIView? {
+        if scrollView === currentScroll { return currentImage }
+        if scrollView === adjacentScroll { return adjacentImage }
+        return nil
+    }
 
     func scrollViewDidZoom(_ scrollView: UIScrollView) {
+        let imageView = scrollView === currentScroll ? currentImage : adjacentImage
         let bounds = scrollView.bounds.size
         let offsetX = max((bounds.width - scrollView.contentSize.width) * 0.5, 0)
         let offsetY = max((bounds.height - scrollView.contentSize.height) * 0.5, 0)
@@ -168,126 +218,223 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
     }
 
     @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
-        if scrollView.zoomScale > 1.1 {
-            scrollView.setZoomScale(1, animated: true)
+        guard activeDelta == 0, !isTransitioning else { return }
+        if currentScroll.zoomScale > 1.1 {
+            currentScroll.setZoomScale(1, animated: true)
         } else {
-            let point = gesture.location(in: imageView)
+            let point = gesture.location(in: currentImage)
             let zoom: CGFloat = 2.5
             let size = CGSize(
-                width: scrollView.bounds.width / zoom,
-                height: scrollView.bounds.height / zoom
+                width: currentScroll.bounds.width / zoom,
+                height: currentScroll.bounds.height / zoom
             )
             let origin = CGPoint(x: point.x - size.width / 2, y: point.y - size.height / 2)
-            scrollView.zoom(to: CGRect(origin: origin, size: size), animated: true)
+            currentScroll.zoom(to: CGRect(origin: origin, size: size), animated: true)
         }
     }
 
-    /// Finger swipe up / left → next (earlier date).
-    /// Finger swipe down / right → prev (more recent date).
+    // MARK: Interactive paging
+    // Gesture map: up / left → next (older, +1); down / right → prev (newer, -1)
+
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
-        guard scrollView.zoomScale <= 1.05, !isTransitioning else { return }
-        // Read in the window so transforms on contentContainer cannot invert axes.
-        let translation = gesture.translation(in: view.window ?? view)
-        let velocity = gesture.velocity(in: view.window ?? view)
+        guard currentScroll.zoomScale <= 1.05, !isTransitioning else { return }
+        let translation = gesture.translation(in: view)
+        let velocity = gesture.velocity(in: view)
 
         switch gesture.state {
+        case .began:
+            break
+
         case .changed:
-            contentContainer.transform = CGAffineTransform(
-                translationX: translation.x * 0.45,
-                y: translation.y * 0.45
-            )
-            let distance = hypot(translation.x, translation.y)
-            contentContainer.alpha = max(0.6, 1 - distance / 280)
+            updateInteractiveDrag(translation: translation)
 
         case .ended, .cancelled:
-            let threshold: CGFloat = 24
-            let velocityThreshold: CGFloat = 180
-            let dominantHorizontal = abs(translation.x) >= abs(translation.y)
-
-            // Left / up → next; right / down → prev.
-            let goNext: Bool
-            let goPrev: Bool
-            if dominantHorizontal {
-                goNext = translation.x < -threshold || velocity.x < -velocityThreshold
-                goPrev = translation.x > threshold || velocity.x > velocityThreshold
-            } else {
-                goNext = translation.y < -threshold || velocity.y < -velocityThreshold
-                goPrev = translation.y > threshold || velocity.y > velocityThreshold
-            }
-
-            if goNext {
-                navigate(delta: 1, from: translation)
-            } else if goPrev {
-                navigate(delta: -1, from: translation)
-            } else {
-                UIView.animate(withDuration: 0.18) {
-                    self.contentContainer.transform = .identity
-                    self.contentContainer.alpha = 1
-                }
-            }
+            finishInteractiveDrag(translation: translation, velocity: velocity)
 
         default:
             break
         }
     }
 
-    private func navigate(delta: Int, from translation: CGPoint) {
-        // Newest-first: +1 = earlier date (next), -1 = more recent (prev).
+    private func updateInteractiveDrag(translation: CGPoint) {
+        let bounds = pager.bounds
+        guard bounds.width > 0, bounds.height > 0 else { return }
+
+        dragAxisHorizontal = abs(translation.x) >= abs(translation.y)
+
+        // Decide neighbor from gesture map.
+        let delta: Int
+        if dragAxisHorizontal {
+            delta = translation.x < 0 ? 1 : (translation.x > 0 ? -1 : activeDelta)
+        } else {
+            delta = translation.y < 0 ? 1 : (translation.y > 0 ? -1 : activeDelta)
+        }
+
         let target = index + delta
-        guard assets.indices.contains(target), target != index else {
-            UIView.animate(withDuration: 0.2, delay: 0, usingSpringWithDamping: 0.75, initialSpringVelocity: 0.5) {
-                self.contentContainer.transform = .identity
-                self.contentContainer.alpha = 1
+        let hasNeighbor = delta != 0 && assets.indices.contains(target)
+
+        if hasNeighbor {
+            if activeDelta != delta {
+                activeDelta = delta
+                prepareAdjacent(for: target)
             }
+        } else {
+            activeDelta = 0
+            adjacentScroll.isHidden = true
+        }
+
+        // Rubber-band when there's no neighbor in that direction.
+        let resistance: CGFloat = hasNeighbor ? 1 : 0.28
+        let dx = dragAxisHorizontal ? translation.x * resistance : 0
+        let dy = dragAxisHorizontal ? 0 : translation.y * resistance
+
+        currentScroll.frame = bounds.offsetBy(dx: dx, dy: dy)
+
+        if hasNeighbor {
+            adjacentScroll.isHidden = false
+            // Neighbor starts off-screen on the edge we're dragging toward, then follows.
+            // left/up (next,+1): neighbor enters from right / bottom
+            // right/down (prev,-1): neighbor enters from left / top
+            if dragAxisHorizontal {
+                let startX = delta > 0 ? bounds.width : -bounds.width
+                adjacentScroll.frame = bounds.offsetBy(dx: startX + dx, dy: 0)
+            } else {
+                let startY = delta > 0 ? bounds.height : -bounds.height
+                adjacentScroll.frame = bounds.offsetBy(dx: 0, dy: startY + dy)
+            }
+        }
+    }
+
+    private func prepareAdjacent(for targetIndex: Int) {
+        guard assets.indices.contains(targetIndex) else { return }
+        let asset = assets[targetIndex]
+        adjacentScroll.zoomScale = 1
+        adjacentImage.image = displayImage(for: asset)
+        adjacentScroll.frame = pager.bounds
+        layoutImage(in: adjacentScroll, imageView: adjacentImage)
+        adjacentScroll.isHidden = false
+        Task { await loadFull(for: asset.id, into: .adjacent) }
+    }
+
+    private func finishInteractiveDrag(translation: CGPoint, velocity: CGPoint) {
+        let bounds = pager.bounds
+        let threshold: CGFloat = min(bounds.width, bounds.height) * 0.22
+        let velocityThreshold: CGFloat = 500
+
+        let primary = dragAxisHorizontal ? translation.x : translation.y
+        let primaryVelocity = dragAxisHorizontal ? velocity.x : velocity.y
+        let distance = abs(primary)
+
+        let shouldCommit: Bool
+        if activeDelta == 0 {
+            shouldCommit = false
+        } else if activeDelta > 0 {
+            // Next via left/up → negative translation
+            shouldCommit = primary < -threshold || primaryVelocity < -velocityThreshold
+        } else {
+            // Prev via right/down → positive translation
+            shouldCommit = primary > threshold || primaryVelocity > velocityThreshold
+        }
+
+        if shouldCommit, assets.indices.contains(index + activeDelta) {
+            commitPageChange()
+        } else {
+            cancelPageChange()
+        }
+    }
+
+    private func commitPageChange() {
+        let delta = activeDelta
+        let target = index + delta
+        guard assets.indices.contains(target) else {
+            cancelPageChange()
             return
         }
 
         isTransitioning = true
-        let exitX: CGFloat = abs(translation.x) >= abs(translation.y)
-            ? (delta > 0 ? view.bounds.width : -view.bounds.width)
-            : translation.x * 0.2
-        let exitY: CGFloat = abs(translation.y) > abs(translation.x)
-            ? (delta > 0 ? view.bounds.height : -view.bounds.height)
-            : translation.y * 0.2
+        let bounds = pager.bounds
+        let endCurrent: CGRect
+        let endAdjacent = bounds
+        if dragAxisHorizontal {
+            endCurrent = bounds.offsetBy(dx: delta > 0 ? -bounds.width : bounds.width, dy: 0)
+        } else {
+            endCurrent = bounds.offsetBy(dx: 0, dy: delta > 0 ? -bounds.height : bounds.height)
+        }
 
-        UIView.animate(withDuration: 0.14, animations: {
-            self.contentContainer.transform = CGAffineTransform(translationX: exitX * 0.45, y: exitY * 0.45)
-            self.contentContainer.alpha = 0.15
-        }, completion: { _ in
-            self.applyAsset(at: target)
-            self.contentContainer.transform = CGAffineTransform(translationX: -exitX * 0.2, y: -exitY * 0.2)
-            UIView.animate(withDuration: 0.16, animations: {
-                self.contentContainer.transform = .identity
-                self.contentContainer.alpha = 1
-            }, completion: { _ in
-                self.isTransitioning = false
-            })
+        let distance = hypot(
+            endCurrent.origin.x - currentScroll.frame.origin.x,
+            endCurrent.origin.y - currentScroll.frame.origin.y
+        )
+        let duration = min(0.32, max(0.16, distance / 1800))
+
+        UIView.animate(
+            withDuration: duration,
+            delay: 0,
+            options: [.curveEaseOut, .allowUserInteraction]
+        ) {
+            self.currentScroll.frame = endCurrent
+            self.adjacentScroll.frame = endAdjacent
+        } completion: { _ in
+            self.promoteAdjacent(to: target)
+            self.isTransitioning = false
+            self.activeDelta = 0
             Task { await self.prefetchNeighbors() }
-        })
+        }
     }
 
-    private func applyAsset(at newIndex: Int) {
-        guard assets.indices.contains(newIndex) else { return }
-        index = newIndex
-        let asset = assets[newIndex]
+    private func cancelPageChange() {
+        isTransitioning = true
+        let bounds = pager.bounds
+        // Park adjacent back off-screen in the direction it came from.
+        var endAdjacent = bounds
+        if activeDelta != 0 {
+            if dragAxisHorizontal {
+                endAdjacent = bounds.offsetBy(dx: activeDelta > 0 ? bounds.width : -bounds.width, dy: 0)
+            } else {
+                endAdjacent = bounds.offsetBy(dx: 0, dy: activeDelta > 0 ? bounds.height : -bounds.height)
+            }
+        }
+
+        UIView.animate(
+            withDuration: 0.28,
+            delay: 0,
+            usingSpringWithDamping: 0.86,
+            initialSpringVelocity: 0.4,
+            options: [.allowUserInteraction]
+        ) {
+            self.currentScroll.frame = bounds
+            self.adjacentScroll.frame = endAdjacent
+        } completion: { _ in
+            self.adjacentScroll.isHidden = true
+            self.adjacentImage.image = nil
+            self.activeDelta = 0
+            self.isTransitioning = false
+        }
+    }
+
+    private func promoteAdjacent(to targetIndex: Int) {
+        // Swap roles: adjacent becomes current without a visual flash.
+        let oldScroll = currentScroll
+        // Move adjacent (now showing the new photo) into current slot visually.
+        // Easiest: copy image into current, reset frames.
+        guard assets.indices.contains(targetIndex) else { return }
+        let asset = assets[targetIndex]
+        index = targetIndex
         currentID = asset.id
-        scrollView.setZoomScale(1, animated: false)
+        currentImage.image = adjacentImage.image ?? displayImage(for: asset)
+        currentScroll.zoomScale = 1
+        currentScroll.frame = pager.bounds
+        layoutImage(in: currentScroll, imageView: currentImage)
+
+        adjacentScroll.isHidden = true
+        adjacentImage.image = nil
+        adjacentScroll.frame = pager.bounds
+        oldScroll.contentOffset = .zero
+
         loadTask?.cancel()
         spinner.stopAnimating()
-
-        if let full = SessionImageCache.shared.full(for: asset.id) {
-            imageView.image = full
-        } else if let thumb = SessionImageCache.shared.thumb(for: asset.id) {
-            imageView.image = thumb
-        } else {
-            imageView.image = nil
-        }
-        layoutImage()
-
         let id = asset.id
-        loadTask = Task {
-            await loadFull(for: id)
-        }
+        loadTask = Task { await loadFull(for: id, into: .current) }
     }
 
     private func prefetchNeighbors() async {
@@ -315,14 +462,12 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
             }
         }
     }
-}
 
-extension FullImageViewController: UIGestureRecognizerDelegate {
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard let pan = gestureRecognizer as? UIPanGestureRecognizer, pan == navPan else { return true }
-        guard scrollView.zoomScale <= 1.05, !isTransitioning else { return false }
-        let v = pan.velocity(in: view.window ?? view)
-        return hypot(v.x, v.y) > 30
+        guard currentScroll.zoomScale <= 1.05, !isTransitioning else { return false }
+        let v = pan.velocity(in: view)
+        return hypot(v.x, v.y) > 20
     }
 
     func gestureRecognizer(
