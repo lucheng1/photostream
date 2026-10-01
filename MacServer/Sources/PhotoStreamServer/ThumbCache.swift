@@ -1,7 +1,7 @@
 import Foundation
 import PhotoStreamShared
 
-/// In-memory + on-disk JPEG thumb cache so parallel workers don't re-encode the same asset.
+/// In-memory + on-disk JPEG thumb cache for Photo Library assets only.
 final class ThumbDiskCache: @unchecked Sendable {
     static let shared = ThumbDiskCache()
 
@@ -22,6 +22,8 @@ final class ThumbDiskCache: @unchecked Sendable {
     }
 
     func data(forKey key: String) -> Data? {
+        // Folder assets are never cached on disk/memory across sessions.
+        if key.hasPrefix("folder:") { return nil }
         if let hit = memory.object(forKey: key as NSString) {
             return hit as Data
         }
@@ -32,6 +34,7 @@ final class ThumbDiskCache: @unchecked Sendable {
     }
 
     func store(_ data: Data, forKey key: String) {
+        if key.hasPrefix("folder:") { return }
         memory.setObject(data as NSData, forKey: key as NSString, cost: data.count)
         let url = dir.appendingPathComponent(fileName(for: key))
         ioQueue.async(flags: .barrier) {

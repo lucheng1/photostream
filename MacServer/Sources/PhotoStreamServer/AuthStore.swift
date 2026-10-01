@@ -3,7 +3,7 @@ import PhotoStreamShared
 
 actor AuthStore {
     private(set) var pin: String
-    private var tokens: Set<String> = []
+    private var tokens: [String: StreamMode] = [:]
 
     init() {
         self.pin = Self.makePIN()
@@ -17,16 +17,31 @@ actor AuthStore {
 
     func currentPIN() -> String { pin }
 
-    func pair(pin candidate: String) -> String? {
-        guard candidate == pin else { return nil }
+    /// Pairs with the 4-digit PIN (Photos library) or PIN + trailing `9` (folder mode).
+    func pair(pin candidate: String, folderConfigured: Bool) -> (token: String, mode: StreamMode)? {
+        let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        let mode: StreamMode
+        if trimmed == pin {
+            mode = .photos
+        } else if trimmed == pin + "9" {
+            guard folderConfigured else { return nil }
+            mode = .folder
+        } else {
+            return nil
+        }
         let token = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        tokens.insert(token)
-        return token
+        tokens[token] = mode
+        return (token, mode)
     }
 
     func isAuthorized(_ token: String?) -> Bool {
         guard let token, !token.isEmpty else { return false }
-        return tokens.contains(token)
+        return tokens[token] != nil
+    }
+
+    func mode(for token: String?) -> StreamMode? {
+        guard let token else { return nil }
+        return tokens[token]
     }
 
     private static func makePIN() -> String {

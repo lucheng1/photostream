@@ -36,6 +36,34 @@ enum ImageEncoder {
         return try jpegData(from: cgImage, quality: 0.92, maxPixel: cap)
     }
 
+    /// Folder-mode thumbnail — not written to the Photo Library disk cache by callers.
+    static func jpegThumbnail(fileURL: URL, maxPixel: Int) throws -> Data {
+        guard let cgImage = loadCGImage(from: fileURL, maxPixel: maxPixel) else {
+            throw ImageEncodeError.noData
+        }
+        return try jpegData(from: cgImage, quality: 0.67, maxPixel: maxPixel)
+    }
+
+    static func jpegFull(fileURL: URL) throws -> Data {
+        guard let cgImage = loadCGImage(from: fileURL, maxPixel: 8192) else {
+            throw ImageEncodeError.noData
+        }
+        let maxEdge = max(cgImage.width, cgImage.height, 1)
+        let cap = min(maxEdge, 8192)
+        return try jpegData(from: cgImage, quality: 0.92, maxPixel: cap)
+    }
+
+    private static func loadCGImage(from url: URL, maxPixel: Int) -> CGImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(maxPixel, 1),
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+
     private static func cgImage(from image: NSImage) -> CGImage? {
         var rect = CGRect(origin: .zero, size: image.size)
         return image.cgImage(forProposedRect: &rect, context: nil, hints: nil)

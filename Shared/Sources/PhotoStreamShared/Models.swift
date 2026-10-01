@@ -90,10 +90,18 @@ public struct PairingRequest: Codable, Sendable {
 
 public struct PairingResponse: Codable, Sendable {
     public var token: String
+    /// `photos` (System Photo Library) or `folder` (configured Mac folder).
+    public var mode: String
 
-    public init(token: String) {
+    public init(token: String, mode: String = "photos") {
         self.token = token
+        self.mode = mode
     }
+}
+
+public enum StreamMode: String, Codable, Sendable {
+    case photos
+    case folder
 }
 
 public struct TimelineBucket: Codable, Sendable, Identifiable {
