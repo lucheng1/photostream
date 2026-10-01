@@ -42,6 +42,7 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         collectionView.dataSource = self
         collectionView.delegate = self
         collectionView.prefetchDataSource = self
+        collectionView.alwaysBounceVertical = true
         collectionView.register(PhotoCell.self, forCellWithReuseIdentifier: PhotoCell.reuseID)
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(collectionView)
@@ -150,6 +151,44 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         }
     }
 
+    /// Load newer photos above the current window so the user can scroll up after a timeline jump.
+    private func loadPreviousIfNeeded() async throws {
+        if isLoadingPage || isJumping || windowStart <= 0 { return }
+        isLoadingPage = true
+        defer { isLoadingPage = false }
+
+        let pageSize = 40
+        let newStart = max(0, windowStart - pageSize)
+        let limit = windowStart - newStart
+        guard limit > 0 else { return }
+
+        let visible = collectionView.indexPathsForVisibleItems.sorted { $0.item < $1.item }
+        let anchorPath = visible.first
+        let anchorID = anchorPath.map { assets[$0.item].id }
+        var anchorOffsetY: CGFloat = 0
+        if let anchorPath,
+           let attrs = masonryLayout.layoutAttributesForItem(at: anchorPath) {
+            anchorOffsetY = attrs.frame.minY - collectionView.contentOffset.y
+        }
+
+        let page = try await client.assets(cursor: String(newStart), limit: limit)
+        guard !page.items.isEmpty else { return }
+
+        windowStart = newStart
+        assets.insert(contentsOf: page.items, at: 0)
+        totalCount = page.totalCount
+
+        collectionView.reloadData()
+        collectionView.layoutIfNeeded()
+
+        if let anchorID,
+           let newIndex = assets.firstIndex(where: { $0.id == anchorID }),
+           let attrs = masonryLayout.layoutAttributesForItem(at: IndexPath(item: newIndex, section: 0)) {
+            let y = max(0, attrs.frame.minY - anchorOffsetY)
+            collectionView.setContentOffset(CGPoint(x: 0, y: y), animated: false)
+        }
+    }
+
     /// Replace the grid window at a library index (timeline jump / pause preview).
     private func jumpToLibraryIndex(_ startIndex: Int, prefetchThumbs: Bool) async {
         if isJumping { return }
@@ -157,13 +196,26 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         defer { isJumping = false }
         do {
             loader.cancelAll()
-            let page = try await client.assets(cursor: String(startIndex), limit: 60)
-            windowStart = startIndex
+            // Include a look-behind so the user can immediately scroll up to newer photos.
+            let lookBehind = min(30, startIndex)
+            let fetchStart = startIndex - lookBehind
+            let page = try await client.assets(cursor: String(fetchStart), limit: 60 + lookBehind)
+            windowStart = fetchStart
             assets = page.items
             nextCursor = page.nextCursor
             totalCount = page.totalCount
             collectionView.reloadData()
-            collectionView.setContentOffset(.zero, animated: false)
+            collectionView.layoutIfNeeded()
+
+            let localIndex = min(max(0, startIndex - fetchStart), max(0, assets.count - 1))
+            if let attrs = masonryLayout.layoutAttributesForItem(at: IndexPath(item: localIndex, section: 0)) {
+                collectionView.setContentOffset(
+                    CGPoint(x: 0, y: max(0, attrs.frame.minY - masonryLayout.sectionInset.top)),
+                    animated: false
+                )
+            } else {
+                collectionView.setContentOffset(.zero, animated: false)
+            }
             updateScrubberLabel()
             if prefetchThumbs {
                 refreshVisibleThumbs(settle: true)
@@ -239,12 +291,21 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
                 do { try await loadMoreIfNeeded() } catch { /* ignore while scrolling */ }
             }
         }
+        if indexPath.item < 12, windowStart > 0 {
+            Task {
+                do { try await loadPreviousIfNeeded() } catch { /* ignore while scrolling */ }
+            }
+        }
     }
 
     func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
         let maxIndex = indexPaths.map(\.item).max() ?? 0
+        let minIndex = indexPaths.map(\.item).min() ?? 0
         if maxIndex > assets.count - 30 {
             Task { try? await loadMoreIfNeeded() }
+        }
+        if minIndex < 15, windowStart > 0 {
+            Task { try? await loadPreviousIfNeeded() }
         }
     }
 
@@ -259,6 +320,9 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         updateScrubber(visible: fast || scrollView.isDragging || scrollView.isDecelerating)
         if fast || scrollView.isDecelerating {
             grabber.showGrabber(animated: true)
+        }
+        if scrollView.contentOffset.y < 240, windowStart > 0 {
+            Task { try? await loadPreviousIfNeeded() }
         }
         if !fast && !scrollView.isDecelerating && !scrollView.isDragging {
             refreshVisibleThumbs(settle: false)
