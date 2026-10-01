@@ -126,10 +126,10 @@ final class VideoPlayerViewController: UIViewController {
 
     private func cleanup() {
         statusObservation = nil
-        if let endObserver {
-            NotificationCenter.default.removeObserver(endObserver)
-            endObserver = nil
+        if let observer = endObserver {
+            NotificationCenter.default.removeObserver(observer)
         }
+        endObserver = nil
         player?.pause()
         player = nil
         if let localFileURL {
