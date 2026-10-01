@@ -217,6 +217,7 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
                 collectionView.setContentOffset(.zero, animated: false)
             }
             updateScrubberLabel()
+            grabber.syncProgress(toLibraryIndex: startIndex)
             if prefetchThumbs {
                 refreshVisibleThumbs(settle: true)
             }
@@ -311,6 +312,9 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         updateScrubber(visible: fast || scrollView.isDragging || scrollView.isDecelerating)
         if fast || scrollView.isDecelerating {
             grabber.showGrabber(animated: true)
+        }
+        if let mid = midVisibleItem() {
+            grabber.syncProgress(toLibraryIndex: libraryIndex(forItem: mid))
         }
         if scrollView.contentOffset.y < 240, windowStart > 0 {
             Task { try? await loadPreviousIfNeeded() }

@@ -100,22 +100,14 @@ final class TimelineGrabberView: UIView {
         totalCount = max(timeline.totalCount, 1)
         rebuildYearLabels()
         if !buckets.isEmpty {
-            currentBucketIndex = bucketIndex(forProgress: 0.5)
+            currentBucketIndex = 0
             updateMonthBubble()
-            centerHandle(animated: false)
+            layoutHandle(forProgress: 0, animated: false)
         }
     }
 
     func showGrabber(animated: Bool = true) {
         hideWorkItem?.cancel()
-        // Idle grabber always appears mid-screen; scrubbing moves it from there.
-        if !isDragging {
-            centerHandle(animated: false)
-            if !buckets.isEmpty {
-                currentBucketIndex = bucketIndex(forProgress: 0.5)
-                updateMonthBubble()
-            }
-        }
         let work = { self.alpha = 1 }
         if animated {
             UIView.animate(withDuration: 0.2, animations: work)
@@ -136,8 +128,12 @@ final class TimelineGrabberView: UIView {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    func centerHandle(animated: Bool = false) {
-        layoutHandle(forProgress: 0.5, animated: animated)
+    func syncProgress(toLibraryIndex index: Int) {
+        guard !isDragging, totalCount > 0, !buckets.isEmpty else { return }
+        let progress = CGFloat(index) / CGFloat(max(totalCount - 1, 1))
+        currentBucketIndex = bucketIndex(forProgress: progress)
+        layoutHandle(forProgress: progress, animated: true)
+        updateMonthBubble()
     }
 
     private func rebuildYearLabels() {
