@@ -3,6 +3,9 @@ import UIKit
 protocol FullImageBrowsing: AnyObject {
     var browseAssets: [AssetSummary] { get }
     func browseLoadMore() async
+    /// Neighbor in visual grid order (not chronological / data-index order).
+    /// `delta` +1 = next cell in the grid, -1 = previous cell.
+    func browseGridNeighbor(fromDataIndex index: Int, delta: Int) -> Int?
 }
 
 final class FullImageViewController: UIViewController, UIScrollViewDelegate {
@@ -173,7 +176,7 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
         }
     }
 
-    /// Swipe down / right → next; swipe up / left → previous.
+    /// Swipe down / right → next grid cell; swipe up / left → previous grid cell.
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
         guard scrollView.zoomScale <= 1.05, !isTransitioning else { return }
         let translation = gesture.translation(in: view)
@@ -181,13 +184,14 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
 
         switch gesture.state {
         case .changed:
-            view.transform = CGAffineTransform(translationX: translation.x * 0.35, y: translation.y * 0.35)
+            view.transform = CGAffineTransform(translationX: translation.x * 0.45, y: translation.y * 0.45)
             let distance = hypot(translation.x, translation.y)
-            view.alpha = max(0.55, 1 - distance / 500)
+            view.alpha = max(0.6, 1 - distance / 280)
 
         case .ended, .cancelled:
-            let threshold: CGFloat = 90
-            let velocityThreshold: CGFloat = 700
+            // Short swipes — small travel or a light flick is enough.
+            let threshold: CGFloat = 28
+            let velocityThreshold: CGFloat = 220
             let dominantHorizontal = abs(translation.x) >= abs(translation.y)
             let goNext: Bool
             let goPrev: Bool
@@ -204,7 +208,7 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
             } else if goPrev {
                 navigate(delta: -1, from: translation)
             } else {
-                UIView.animate(withDuration: 0.2) {
+                UIView.animate(withDuration: 0.18) {
                     self.view.transform = .identity
                     self.view.alpha = 1
                 }
@@ -216,9 +220,10 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
     }
 
     private func navigate(delta: Int, from translation: CGPoint) {
-        let target = index + delta
-        guard assets.indices.contains(target) else {
-            UIView.animate(withDuration: 0.22, delay: 0, usingSpringWithDamping: 0.7, initialSpringVelocity: 0.4) {
+        // Resolve via visual grid order (masonry top→bottom, left→right), not date/index order.
+        let target = browser?.browseGridNeighbor(fromDataIndex: index, delta: delta) ?? (index + delta)
+        guard assets.indices.contains(target), target != index else {
+            UIView.animate(withDuration: 0.2, delay: 0, usingSpringWithDamping: 0.75, initialSpringVelocity: 0.5) {
                 self.view.transform = .identity
                 self.view.alpha = 1
             }
@@ -233,13 +238,13 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
             ? (delta > 0 ? view.bounds.height : -view.bounds.height)
             : translation.y * 0.2
 
-        UIView.animate(withDuration: 0.18, animations: {
-            self.view.transform = CGAffineTransform(translationX: exitX * 0.55, y: exitY * 0.55)
+        UIView.animate(withDuration: 0.14, animations: {
+            self.view.transform = CGAffineTransform(translationX: exitX * 0.45, y: exitY * 0.45)
             self.view.alpha = 0.15
         }, completion: { _ in
             self.applyAsset(at: target)
-            self.view.transform = CGAffineTransform(translationX: -exitX * 0.25, y: -exitY * 0.25)
-            UIView.animate(withDuration: 0.22, animations: {
+            self.view.transform = CGAffineTransform(translationX: -exitX * 0.2, y: -exitY * 0.2)
+            UIView.animate(withDuration: 0.16, animations: {
                 self.view.transform = .identity
                 self.view.alpha = 1
             }, completion: { _ in
@@ -275,12 +280,14 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
 
     private func prefetchNeighbors() async {
         await browser?.browseLoadMore()
-        // Re-sync index if the underlying window grew/shifted while keeping current id.
         if let refreshed = browser?.browseAssets,
            let newIdx = refreshed.firstIndex(where: { $0.id == currentID }) {
             index = newIdx
         }
-        let neighbors = [index - 1, index + 1].filter { assets.indices.contains($0) }
+        let neighbors = [browser?.browseGridNeighbor(fromDataIndex: index, delta: -1),
+                         browser?.browseGridNeighbor(fromDataIndex: index, delta: 1)]
+            .compactMap { $0 }
+            .filter { assets.indices.contains($0) }
         for i in neighbors {
             let id = assets[i].id
             if SessionImageCache.shared.full(for: id) != nil { continue }
@@ -299,8 +306,7 @@ extension FullImageViewController: UIGestureRecognizerDelegate {
         guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
         guard scrollView.zoomScale <= 1.05, !isTransitioning else { return false }
         let v = pan.velocity(in: view)
-        // Require a clear directional intent so light touches don't steal zoom.
-        return hypot(v.x, v.y) > 120
+        return hypot(v.x, v.y) > 40
     }
 
     func gestureRecognizer(

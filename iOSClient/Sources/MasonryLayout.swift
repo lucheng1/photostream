@@ -85,6 +85,19 @@ final class MasonryLayout: UICollectionViewLayout {
         return attributesCache[indexPath.item]
     }
 
+    /// Data indices in visual grid order (top → bottom, left → right).
+    func indicesInVisualOrder() -> [Int] {
+        guard !attributesCache.isEmpty else { return [] }
+        return attributesCache.indices.sorted { a, b in
+            let fa = attributesCache[a].frame
+            let fb = attributesCache[b].frame
+            if abs(fa.minY - fb.minY) > 0.5 {
+                return fa.minY < fb.minY
+            }
+            return fa.minX < fb.minX
+        }
+    }
+
     override func shouldInvalidateLayout(forBoundsChange newBounds: CGRect) -> Bool {
         guard let collectionView else { return false }
         return abs(newBounds.width - collectionView.bounds.width) > 0.5
