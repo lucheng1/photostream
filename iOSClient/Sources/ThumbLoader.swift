@@ -73,6 +73,12 @@ final class ThumbLoader: @unchecked Sendable {
             for item in items {
                 self.pendingSizes[item.id] = item.pointSize
                 if SessionImageCache.shared.thumb(for: item.id) != nil { continue }
+                // Warm from disk without blocking the loader queue on decode for every id.
+                if let disk = SessionImageCache.shared.thumbFromDisk(for: item.id) {
+                    let cb = onImage
+                    Task { @MainActor in cb(item.id, disk) }
+                    continue
+                }
                 if self.inflight[item.id] != nil { continue }
                 if self.pendingCallbacks[item.id] != nil {
                     self.pendingCallbacks[item.id] = onImage
@@ -139,7 +145,7 @@ final class ThumbLoader: @unchecked Sendable {
                     data: data,
                     maxPixel: CGFloat(side)
                 ) else { return }
-                SessionImageCache.shared.setThumb(image, for: id)
+                SessionImageCache.shared.setThumb(image, for: id, persistData: data)
                 await onImage(id, image)
             } catch {
                 return

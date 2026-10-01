@@ -192,7 +192,10 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: PhotoCell.reuseID, for: indexPath) as! PhotoCell
         let asset = assets[indexPath.item]
-        cell.configure(asset: asset, image: SessionImageCache.shared.thumb(for: asset.id))
+        // Memory first, then local disk — avoid a network round-trip when scrolling back.
+        let image = SessionImageCache.shared.thumb(for: asset.id)
+            ?? SessionImageCache.shared.thumbFromDisk(for: asset.id)
+        cell.configure(asset: asset, image: image)
         return cell
     }
 
