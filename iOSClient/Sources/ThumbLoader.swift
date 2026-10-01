@@ -1,12 +1,11 @@
 import UIKit
 
 /// Velocity-gated thumbnail loader: skips cells flicked past; settle-only fetch.
-final class ThumbLoader {
+actor ThumbLoader {
     private let client: PhotoStreamAPIClient
     private var inflight: [String: Task<Void, Never>] = [:]
-    private let lock = NSLock()
     private var isFastScrolling = false
-    private var settleWorkItem: DispatchWorkItem?
+    private var settleTask: Task<Void, Never>?
 
     var cellPixelSize: CGFloat = 200
     var scale: Int = 3
@@ -15,39 +14,37 @@ final class ThumbLoader {
         self.client = client
     }
 
+    func setCellMetrics(pixelSize: CGFloat, scale: Int) {
+        cellPixelSize = pixelSize
+        self.scale = scale
+    }
+
     func setFastScrolling(_ fast: Bool) {
-        lock.lock()
         isFastScrolling = fast
-        lock.unlock()
         if fast {
             cancelAll()
-            settleWorkItem?.cancel()
+            settleTask?.cancel()
+            settleTask = nil
         }
     }
 
-    func scheduleSettle(visibleIDs: [String], onImage: @escaping @MainActor (String, UIImage) -> Void) {
-        settleWorkItem?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            self?.loadVisible(ids: visibleIDs, onImage: onImage)
+    func scheduleSettle(visibleIDs: [String], onImage: @escaping @Sendable @MainActor (String, UIImage) -> Void) {
+        settleTask?.cancel()
+        settleTask = Task {
+            try? await Task.sleep(nanoseconds: 70_000_000)
+            guard !Task.isCancelled else { return }
+            await loadVisible(ids: visibleIDs, onImage: onImage)
         }
-        settleWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.07, execute: work)
     }
 
-    func loadVisible(ids: [String], onImage: @escaping @MainActor (String, UIImage) -> Void) {
-        lock.lock()
-        let fast = isFastScrolling
-        lock.unlock()
-        guard !fast else { return }
+    func loadVisible(ids: [String], onImage: @escaping @Sendable @MainActor (String, UIImage) -> Void) {
+        guard !isFastScrolling else { return }
 
         let wanted = Set(ids)
-
-        lock.lock()
         for (id, task) in inflight where !wanted.contains(id) {
             task.cancel()
             inflight[id] = nil
         }
-        lock.unlock()
 
         for id in ids {
             if SessionImageCache.shared.thumb(for: id) != nil { continue }
@@ -56,22 +53,14 @@ final class ThumbLoader {
     }
 
     func cancelAll() {
-        lock.lock()
-        let all = inflight
-        inflight.removeAll()
-        lock.unlock()
-        for (_, task) in all {
+        for (_, task) in inflight {
             task.cancel()
         }
+        inflight.removeAll()
     }
 
-    private func start(id: String, onImage: @escaping @MainActor (String, UIImage) -> Void) {
-        lock.lock()
-        if inflight[id] != nil {
-            lock.unlock()
-            return
-        }
-        lock.unlock()
+    private func start(id: String, onImage: @escaping @Sendable @MainActor (String, UIImage) -> Void) {
+        if inflight[id] != nil { return }
 
         let maxPixel = cellPixelSize
         let scale = self.scale
@@ -79,9 +68,7 @@ final class ThumbLoader {
 
         let task = Task { [weak self] in
             defer {
-                self?.lock.lock()
-                self?.inflight[id] = nil
-                self?.lock.unlock()
+                Task { await self?.clearInflight(id) }
             }
             do {
                 let data = try await client.thumbData(
@@ -96,18 +83,17 @@ final class ThumbLoader {
                     maxPixel: maxPixel * CGFloat(scale)
                 ) else { return }
                 SessionImageCache.shared.setThumb(image, for: id)
-                await MainActor.run {
-                    onImage(id, image)
-                }
+                await onImage(id, image)
             } catch is CancellationError {
                 return
             } catch {
                 return
             }
         }
-
-        lock.lock()
         inflight[id] = task
-        lock.unlock()
+    }
+
+    private func clearInflight(_ id: String) {
+        inflight[id] = nil
     }
 }

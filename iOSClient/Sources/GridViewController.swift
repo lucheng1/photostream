@@ -81,8 +81,8 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         let spacing: CGFloat = 2
         let width = view.bounds.width > 0 ? view.bounds.width : UIScreen.main.bounds.width
         let side = floor((width - spacing * 3) / 2)
-        loader.cellPixelSize = side
-        loader.scale = Int(view.window?.screen.scale ?? UIScreen.main.scale)
+        let scale = Int(view.window?.screen.scale ?? UIScreen.main.scale)
+        Task { await loader.setCellMetrics(pixelSize: side, scale: scale) }
     }
 
     private func loadInitial() async {
@@ -167,7 +167,7 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         // use isDecelerating + pan velocity.
         let panV = abs(scrollView.panGestureRecognizer.velocity(in: view).y)
         let fast = panV > 1200 || (scrollView.isDecelerating && panV > 400)
-        loader.setFastScrolling(fast)
+        Task { await loader.setFastScrolling(fast) }
         updateScrubber(visible: fast || scrollView.isDragging || scrollView.isDecelerating)
         if !fast && !scrollView.isDecelerating && !scrollView.isDragging {
             refreshVisibleThumbs(settle: false)
@@ -180,14 +180,14 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         if !decelerate {
-            loader.setFastScrolling(false)
+            Task { await loader.setFastScrolling(false) }
             refreshVisibleThumbs(settle: true)
             hideScrubberSoon()
         }
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-        loader.setFastScrolling(false)
+        Task { await loader.setFastScrolling(false) }
         refreshVisibleThumbs(settle: true)
         hideScrubberSoon()
     }
@@ -203,16 +203,18 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         if let last = paths.last?.item, last + 1 < assets.count {
             ids.append(assets[min(assets.count - 1, last + 2)].id)
         }
-        let onImage: @MainActor (String, UIImage) -> Void = { [weak self] id, image in
-            guard let self else { return }
-            for cell in self.collectionView.visibleCells {
+        let collectionView = self.collectionView
+        let onImage: @Sendable @MainActor (String, UIImage) -> Void = { id, image in
+            for cell in collectionView?.visibleCells ?? [] {
                 (cell as? PhotoCell)?.apply(image: image, for: id)
             }
         }
-        if settle {
-            loader.scheduleSettle(visibleIDs: ids, onImage: onImage)
-        } else {
-            loader.loadVisible(ids: ids, onImage: onImage)
+        Task {
+            if settle {
+                await loader.scheduleSettle(visibleIDs: ids, onImage: onImage)
+            } else {
+                await loader.loadVisible(ids: ids, onImage: onImage)
+            }
         }
         updateScrubberLabel()
     }
