@@ -15,10 +15,13 @@ targets:
       - path: Shared/Sources/PhotoStreamShared
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: app.photostream.ios
+      PRODUCT_NAME: PhotoStream
       INFOPLIST_FILE: iOSClient/Info.plist
       TARGETED_DEVICE_FAMILY: "1"
       SWIFT_STRICT_CONCURRENCY: minimal
       SWIFT_VERSION: "5.0"
+      CODE_SIGNING_ALLOWED: "NO"
+      CODE_SIGNING_REQUIRED: "NO"
     info:
       path: iOSClient/Info.plist
       properties:
