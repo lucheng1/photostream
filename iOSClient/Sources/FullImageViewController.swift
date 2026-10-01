@@ -1,4 +1,3 @@
-import PhotoStreamShared
 import UIKit
 
 final class FullImageViewController: UIViewController, UIScrollViewDelegate {

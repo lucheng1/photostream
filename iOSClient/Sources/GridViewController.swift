@@ -1,4 +1,3 @@
-import PhotoStreamShared
 import UIKit
 
 final class GridViewController: UIViewController, UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDataSourcePrefetching, UIScrollViewDelegate {

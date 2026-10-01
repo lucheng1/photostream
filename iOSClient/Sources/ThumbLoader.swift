@@ -1,4 +1,3 @@
-import PhotoStreamShared
 import UIKit
 
 /// Velocity-gated thumbnail loader: skips cells flicked past; settle-only fetch.

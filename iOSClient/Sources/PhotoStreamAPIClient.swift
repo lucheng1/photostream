@@ -1,5 +1,4 @@
 import Foundation
-import PhotoStreamShared
 
 actor PhotoStreamAPIClient {
     private var baseURL: URL

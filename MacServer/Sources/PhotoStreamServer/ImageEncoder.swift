@@ -48,6 +48,23 @@ enum ImageEncoder {
         deliveryMode: PHImageRequestOptionsDeliveryMode,
         resizeMode: PHImageRequestOptionsResizeMode
     ) async throws -> NSImage {
+        let cgImage = try await requestCGImage(
+            for: asset,
+            targetSize: targetSize,
+            contentMode: contentMode,
+            deliveryMode: deliveryMode,
+            resizeMode: resizeMode
+        )
+        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    }
+
+    private static func requestCGImage(
+        for asset: PHAsset,
+        targetSize: CGSize,
+        contentMode: PHImageContentMode,
+        deliveryMode: PHImageRequestOptionsDeliveryMode,
+        resizeMode: PHImageRequestOptionsResizeMode
+    ) async throws -> CGImage {
         try await withCheckedThrowingContinuation { continuation in
             let options = PHImageRequestOptions()
             options.isSynchronous = false
@@ -91,9 +108,17 @@ enum ImageEncoder {
                     }
                     return
                 }
+                var rect = CGRect(origin: .zero, size: image.size)
+                guard let cgImage = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) else {
+                    if !finished {
+                        finished = true
+                        continuation.resume(throwing: ImageEncodeError.noData)
+                    }
+                    return
+                }
                 if !finished {
                     finished = true
-                    continuation.resume(returning: image)
+                    continuation.resume(returning: cgImage)
                 }
             }
         }
