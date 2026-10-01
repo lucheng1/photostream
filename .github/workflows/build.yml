@@ -1,0 +1,109 @@
+name: PhotoStream
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  mac-server:
+    name: Mac Server
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Build PhotoStreamServer (release)
+        run: swift build --product PhotoStreamServer -c release
+
+      - name: Package PhotoStream.app
+        run: |
+          set -euo pipefail
+          BIN="$(find .build -name PhotoStreamServer -type f -perm -111 ! -path '*.dSYM*' | head -1)"
+          test -n "$BIN"
+          echo "Binary: $BIN"
+          APP="dist/PhotoStream.app"
+          rm -rf "$APP"
+          mkdir -p "$APP/Contents/MacOS"
+          cp "$BIN" "$APP/Contents/MacOS/PhotoStream"
+          cp MacServer/Info.plist "$APP/Contents/Info.plist"
+          chmod +x "$APP/Contents/MacOS/PhotoStream"
+          codesign --force --deep --sign - "$APP"
+          ditto -c -k --keepParent "$APP" dist/PhotoStream-macOS.zip
+          ls -lh dist/
+
+      - name: Upload macOS app
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhotoStream-macOS
+          path: dist/PhotoStream-macOS.zip
+          if-no-files-found: error
+
+  ios-client:
+    name: iOS Client
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Resolve / list schemes
+        run: xcodebuild -list -project PhotoStream.xcodeproj
+
+      - name: Build for iOS Simulator (unsigned)
+        run: |
+          set -euo pipefail
+          DEST="$(
+            xcrun simctl list devices available \
+              | grep -E 'iPhone (16|15|17)' \
+              | head -1 \
+              | sed -E 's/.*\(([A-F0-9-]+)\).*/\1/' \
+              || true
+          )"
+          if [[ -n "${DEST}" ]]; then
+            DESTINATION="platform=iOS Simulator,id=${DEST}"
+          else
+            DESTINATION="generic/platform=iOS Simulator"
+          fi
+          echo "Destination: ${DESTINATION}"
+          xcodebuild \
+            -project PhotoStream.xcodeproj \
+            -scheme PhotoStreamiOS \
+            -configuration Release \
+            -destination "${DESTINATION}" \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Package .app
+        run: |
+          set -euo pipefail
+          APP="$(find DerivedData/Build/Products -name 'PhotoStreamiOS.app' -type d | head -1)"
+          test -n "$APP"
+          echo "App: $APP"
+          mkdir -p dist
+          ditto -c -k --keepParent "$APP" dist/PhotoStream-iOS-Simulator.zip
+          ls -lh dist/
+
+      - name: Upload iOS simulator app
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhotoStream-iOS-Simulator
+          path: dist/PhotoStream-iOS-Simulator.zip
+          if-no-files-found: error
