@@ -19,7 +19,7 @@ enum ImageEncoder {
             resizeMode: .fast
         )
         guard let cgImage = cgImage(from: image) else { throw ImageEncodeError.noData }
-        return try jpegData(from: cgImage, quality: 0.62, maxPixel: maxPixel)
+        return try jpegData(from: cgImage, quality: 0.67, maxPixel: maxPixel)
     }
 
     static func jpegFull(for asset: PHAsset) async throws -> Data {
@@ -165,7 +165,7 @@ enum ImageEncoder {
         ) else {
             return image
         }
-        ctx.interpolationQuality = .medium
+        ctx.interpolationQuality = .high
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: tw, height: th))
         return ctx.makeImage() ?? image
     }

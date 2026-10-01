@@ -105,8 +105,9 @@ final class AppRouter: @unchecked Sendable {
         }
         let w = Int(request.query["w"] ?? "200") ?? 200
         let h = Int(request.query["h"] ?? "200") ?? 200
-        let scale = Int(request.query["scale"] ?? "2") ?? 2
-        let maxPixel = max(w, h) * max(1, min(scale, 2))
+        let scale = Int(request.query["scale"] ?? "3") ?? 3
+        // Allow up to @3; clients may send pre-multiplied pixel size with scale=1.
+        let maxPixel = max(w, h) * max(1, min(scale, 3))
         let cacheKey = ThumbDiskCache.shared.key(assetID: id, maxPixel: maxPixel)
 
         if let cached = ThumbDiskCache.shared.data(forKey: cacheKey) {

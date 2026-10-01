@@ -24,8 +24,7 @@ final class ThumbLoader: @unchecked Sendable {
     func setCellMetrics(pixelSize: CGFloat, scale: Int) {
         queue.async {
             self.cellPixelSize = pixelSize
-            // Cap retina request size — @2x fills the cell visually with far less encode/transfer cost.
-            self.scale = min(max(scale, 1), 2)
+            self.scale = min(max(scale, 1), 3)
         }
     }
 
@@ -105,8 +104,10 @@ final class ThumbLoader: @unchecked Sendable {
     }
 
     private func startLocked(id: String, onImage: @escaping @Sendable @MainActor (String, UIImage) -> Void) {
-        let maxPixel = cellPixelSize
-        let scale = self.scale
+        // Midway between the speed-tuned @2x and the original full-retina request.
+        let deviceScale = min(max(self.scale, 1), 3)
+        let effectiveScale = (2.0 + Double(deviceScale)) / 2.0
+        let side = max(1, Int(round(Double(cellPixelSize) * effectiveScale)))
         let client = self.client
         activeWorkers += 1
 
@@ -121,14 +122,14 @@ final class ThumbLoader: @unchecked Sendable {
             do {
                 let data = try await client.thumbData(
                     assetID: id,
-                    width: Int(maxPixel),
-                    height: Int(maxPixel),
-                    scale: scale
+                    width: side,
+                    height: side,
+                    scale: 1
                 )
                 try Task.checkCancellation()
                 guard let image = ImageDownsampler.downsample(
                     data: data,
-                    maxPixel: maxPixel * CGFloat(scale)
+                    maxPixel: CGFloat(side)
                 ) else { return }
                 SessionImageCache.shared.setThumb(image, for: id)
                 await onImage(id, image)
