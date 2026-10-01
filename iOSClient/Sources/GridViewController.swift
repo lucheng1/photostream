@@ -27,7 +27,6 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
-        title = "PhotoStream"
         navigationItem.largeTitleDisplayMode = .never
 
         masonryLayout.delegate = self
@@ -43,6 +42,7 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         collectionView.delegate = self
         collectionView.prefetchDataSource = self
         collectionView.alwaysBounceVertical = true
+        collectionView.contentInsetAdjustmentBehavior = .never
         collectionView.register(PhotoCell.self, forCellWithReuseIdentifier: PhotoCell.reuseID)
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(collectionView)
@@ -62,7 +62,7 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         view.addSubview(grabber)
 
         NSLayoutConstraint.activate([
-            collectionView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            collectionView.topAnchor.constraint(equalTo: view.topAnchor),
             collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -80,6 +80,10 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         Task { await loadInitial() }
     }
 
+    override var prefersStatusBarHidden: Bool { true }
+
+    override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation { .fade }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         updateThumbScale()
@@ -87,6 +91,7 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        navigationController?.setNavigationBarHidden(true, animated: animated)
         // Returning from the full-image viewer (or first appear) — resume any thumbs
         // that were cancelled mid-load when a scroll was interrupted by a tap.
         loader.setFastScrolling(false)
@@ -120,7 +125,6 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         do {
             let info = try await client.info()
             totalCount = info.assetCount
-            title = "\(info.hostName) · \(info.assetCount)"
             async let timelineTask: Void = loadTimeline()
             try await loadMoreIfNeeded(force: true)
             await timelineTask

@@ -228,6 +228,10 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate, UIG
         dismiss(animated: true)
     }
 
+    override var prefersStatusBarHidden: Bool { true }
+
+    override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation { .fade }
+
     @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
         guard activeDelta == 0, !isTransitioning else { return }
         if currentScroll.zoomScale > 1.1 {

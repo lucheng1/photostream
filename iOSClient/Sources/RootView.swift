@@ -205,7 +205,10 @@ struct GridHost: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> UINavigationController {
         let grid = GridViewController(client: client)
-        return UINavigationController(rootViewController: grid)
+        let nav = UINavigationController(rootViewController: grid)
+        nav.setNavigationBarHidden(true, animated: false)
+        nav.navigationBar.isHidden = true
+        return nav
     }
 
     func updateUIViewController(_ uiViewController: UINavigationController, context: Context) {}
