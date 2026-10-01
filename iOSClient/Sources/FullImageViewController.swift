@@ -182,8 +182,8 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
         }
     }
 
-    /// Finger swipe up / right → next (earlier date).
-    /// Finger swipe down / left → prev (more recent date).
+    /// Finger swipe up / left → next (earlier date).
+    /// Finger swipe down / right → prev (more recent date).
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
         guard scrollView.zoomScale <= 1.05, !isTransitioning else { return }
         // Read in the window so transforms on contentContainer cannot invert axes.
@@ -204,12 +204,12 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
             let velocityThreshold: CGFloat = 180
             let dominantHorizontal = abs(translation.x) >= abs(translation.y)
 
-            // Right / up → next; left / down → prev.
+            // Left / up → next; right / down → prev.
             let goNext: Bool
             let goPrev: Bool
             if dominantHorizontal {
-                goNext = translation.x > threshold || velocity.x > velocityThreshold
-                goPrev = translation.x < -threshold || velocity.x < -velocityThreshold
+                goNext = translation.x < -threshold || velocity.x < -velocityThreshold
+                goPrev = translation.x > threshold || velocity.x > velocityThreshold
             } else {
                 goNext = translation.y < -threshold || velocity.y < -velocityThreshold
                 goPrev = translation.y > threshold || velocity.y > velocityThreshold
