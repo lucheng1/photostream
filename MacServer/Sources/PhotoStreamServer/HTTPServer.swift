@@ -130,6 +130,11 @@ struct HTTPRequest: Sendable {
     var token: String? {
         headers[PhotoStreamConstants.authHeader.lowercased()]
             ?? headers["authorization"]?.replacingOccurrences(of: "Bearer ", with: "")
+            ?? query["token"]
+    }
+
+    var rangeHeader: String? {
+        headers["range"]
     }
 
     static func parse(headerText: String, body: Data) -> HTTPRequest? {
@@ -211,6 +216,7 @@ struct HTTPResponse: Sendable {
             status: status,
             headers: [
                 "Content-Type": contentType,
+                "Accept-Ranges": "bytes",
                 "Cache-Control": "no-store",
             ],
             body: data
@@ -221,15 +227,19 @@ struct HTTPResponse: Sendable {
         let reason: String
         switch status {
         case 200: reason = "OK"
+        case 206: reason = "Partial Content"
         case 400: reason = "Bad Request"
         case 401: reason = "Unauthorized"
         case 404: reason = "Not Found"
         case 413: reason = "Payload Too Large"
+        case 416: reason = "Range Not Satisfiable"
         case 500: reason = "Internal Server Error"
         default: reason = "OK"
         }
         var headerMap = headers
-        headerMap["Content-Length"] = String(body.count)
+        if headerMap["Content-Length"] == nil {
+            headerMap["Content-Length"] = String(body.count)
+        }
         headerMap["Connection"] = "close"
         var text = "HTTP/1.1 \(status) \(reason)\r\n"
         for (k, v) in headerMap {

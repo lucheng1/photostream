@@ -58,8 +58,10 @@ final class AppRouter: @unchecked Sendable {
             if method == "GET", path.hasPrefix("/v1/assets/"), path.hasSuffix("/full") {
                 return await full(request, path: path, mode: mode)
             }
-            if method == "GET", path.hasPrefix("/v1/assets/"), path.hasSuffix("/video") {
-                return await video(request, path: path, mode: mode)
+            if (method == "GET" || method == "HEAD"),
+               path.hasPrefix("/v1/assets/"),
+               path.hasSuffix("/video") {
+                return await video(request, path: path, mode: mode, includeBody: method == "GET")
             }
             return .json(APIErrorBody(error: "not found"), status: 404)
         }
@@ -215,7 +217,12 @@ final class AppRouter: @unchecked Sendable {
         }
     }
 
-    private func video(_ request: HTTPRequest, path: String, mode: StreamMode) async -> HTTPResponse {
+    private func video(
+        _ request: HTTPRequest,
+        path: String,
+        mode: StreamMode,
+        includeBody: Bool
+    ) async -> HTTPResponse {
         guard let id = assetID(from: path, suffix: "/video") else {
             return .json(APIErrorBody(error: "bad id"), status: 400)
         }
@@ -228,8 +235,13 @@ final class AppRouter: @unchecked Sendable {
                 return .json(APIErrorBody(error: "not a video"), status: 400)
             }
             do {
-                let (data, contentType) = try await VideoExporter.data(for: asset)
-                return .video(data, contentType: contentType)
+                let (fileURL, contentType) = try await VideoExporter.fileURL(for: asset)
+                return VideoHTTP.response(
+                    fileURL: fileURL,
+                    contentType: contentType,
+                    rangeHeader: request.rangeHeader,
+                    includeBody: includeBody
+                )
             } catch {
                 return .json(APIErrorBody(error: error.localizedDescription), status: 500)
             }
@@ -240,12 +252,13 @@ final class AppRouter: @unchecked Sendable {
             guard asset.mediaType == .video else {
                 return .json(APIErrorBody(error: "not a video"), status: 400)
             }
-            do {
-                let (data, contentType) = try VideoExporter.data(fileURL: asset.fileURL)
-                return .video(data, contentType: contentType)
-            } catch {
-                return .json(APIErrorBody(error: error.localizedDescription), status: 500)
-            }
+            let contentType = VideoExporter.mimeType(forExtension: asset.fileURL.pathExtension.lowercased())
+            return VideoHTTP.response(
+                fileURL: asset.fileURL,
+                contentType: contentType,
+                rangeHeader: request.rangeHeader,
+                includeBody: includeBody
+            )
         }
     }
 }

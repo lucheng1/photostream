@@ -2,7 +2,7 @@ import AVFoundation
 import AVKit
 import UIKit
 
-/// Full-screen video playback (Google Photos / Amazon Photos style).
+/// Full-screen progressive video playback (Google Photos / Amazon Photos style).
 final class VideoPlayerViewController: UIViewController {
     private let client: PhotoStreamAPIClient
     private let assetID: String
@@ -14,7 +14,6 @@ final class VideoPlayerViewController: UIViewController {
     private let spinner = UIActivityIndicatorView(style: .large)
     private let errorLabel = UILabel()
     private var player: AVPlayer?
-    private var localFileURL: URL?
     private var endObserver: NSObjectProtocol?
     private var statusObservation: NSKeyValueObservation?
 
@@ -132,40 +131,34 @@ final class VideoPlayerViewController: UIViewController {
         endObserver = nil
         player?.pause()
         player = nil
-        if let localFileURL {
-            try? FileManager.default.removeItem(at: localFileURL)
-            self.localFileURL = nil
-        }
     }
 
     private func startPlayback() async {
-        do {
-            let fileURL = try await client.downloadVideo(assetID: assetID)
-            localFileURL = fileURL
+        let streamURL = await client.streamingVideoURL(assetID: assetID)
+        // Prefer resource loader–friendly asset options for progressive HTTP.
+        let asset = AVURLAsset(url: streamURL)
+        let item = AVPlayerItem(asset: asset)
+        // Start sooner with a smaller buffer for LAN.
+        item.preferredForwardBufferDuration = 2
 
-            let item = AVPlayerItem(url: fileURL)
-            let player = AVPlayer(playerItem: item)
-            player.actionAtItemEnd = .pause
-            self.player = player
-            playerController.player = player
+        let player = AVPlayer(playerItem: item)
+        player.automaticallyWaitsToMinimizeStalling = true
+        player.actionAtItemEnd = .pause
+        self.player = player
+        playerController.player = player
 
-            statusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
-                Task { @MainActor in
-                    self?.handleItemStatus(item.status, error: item.error)
-                }
+        statusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+            Task { @MainActor in
+                self?.handleItemStatus(item.status, error: item.error)
             }
+        }
 
-            endObserver = NotificationCenter.default.addObserver(
-                forName: .AVPlayerItemDidPlayToEndTime,
-                object: item,
-                queue: .main
-            ) { [weak player] _ in
-                player?.seek(to: .zero)
-            }
-        } catch {
-            await MainActor.run {
-                showError(error.localizedDescription)
-            }
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak player] _ in
+            player?.seek(to: .zero)
         }
     }
 
