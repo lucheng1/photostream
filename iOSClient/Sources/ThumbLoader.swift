@@ -1,5 +1,11 @@
 import UIKit
 
+struct ThumbRequest: Sendable {
+    let id: String
+    /// Longest edge in points (column width × max(1, aspect)).
+    let pointSize: CGFloat
+}
+
 /// Velocity-gated thumbnail loader with a bounded parallel worker pool.
 final class ThumbLoader: @unchecked Sendable {
     private let client: PhotoStreamAPIClient
@@ -7,6 +13,7 @@ final class ThumbLoader: @unchecked Sendable {
     private var inflight: [String: Task<Void, Never>] = [:]
     private var pendingOrder: [String] = []
     private var pendingCallbacks: [String: @Sendable @MainActor (String, UIImage) -> Void] = [:]
+    private var pendingSizes: [String: CGFloat] = [:]
     private var isFastScrolling = false
     private var settleWorkItem: DispatchWorkItem?
     private var activeWorkers = 0
@@ -14,16 +21,14 @@ final class ThumbLoader: @unchecked Sendable {
     /// Parallel HTTP thumb fetches (kept under typical Wi‑Fi comfort).
     private let maxWorkers = 12
 
-    private var cellPixelSize: CGFloat = 200
     private var scale: Int = 3
 
     init(client: PhotoStreamAPIClient) {
         self.client = client
     }
 
-    func setCellMetrics(pixelSize: CGFloat, scale: Int) {
+    func setScale(_ scale: Int) {
         queue.async {
-            self.cellPixelSize = pixelSize
             self.scale = min(max(scale, 1), 3)
         }
     }
@@ -39,23 +44,22 @@ final class ThumbLoader: @unchecked Sendable {
         }
     }
 
-    func scheduleSettle(visibleIDs: [String], onImage: @escaping @Sendable @MainActor (String, UIImage) -> Void) {
+    func scheduleSettle(items: [ThumbRequest], onImage: @escaping @Sendable @MainActor (String, UIImage) -> Void) {
         queue.async {
             self.settleWorkItem?.cancel()
             let work = DispatchWorkItem { [weak self] in
-                self?.loadVisible(ids: visibleIDs, onImage: onImage)
+                self?.loadVisible(items: items, onImage: onImage)
             }
             self.settleWorkItem = work
             self.queue.asyncAfter(deadline: .now() + 0.04, execute: work)
         }
     }
 
-    func loadVisible(ids: [String], onImage: @escaping @Sendable @MainActor (String, UIImage) -> Void) {
+    func loadVisible(items: [ThumbRequest], onImage: @escaping @Sendable @MainActor (String, UIImage) -> Void) {
         queue.async {
             guard !self.isFastScrolling else { return }
-            let wanted = Set(ids)
+            let wanted = Set(items.map(\.id))
 
-            // Drop workers / queue entries that scrolled away.
             for (id, task) in self.inflight where !wanted.contains(id) {
                 task.cancel()
                 self.inflight[id] = nil
@@ -63,17 +67,19 @@ final class ThumbLoader: @unchecked Sendable {
             self.pendingOrder.removeAll { !wanted.contains($0) }
             for id in self.pendingCallbacks.keys where !wanted.contains(id) {
                 self.pendingCallbacks[id] = nil
+                self.pendingSizes[id] = nil
             }
 
-            for id in ids {
-                if SessionImageCache.shared.thumb(for: id) != nil { continue }
-                if self.inflight[id] != nil { continue }
-                if self.pendingCallbacks[id] != nil {
-                    self.pendingCallbacks[id] = onImage
+            for item in items {
+                self.pendingSizes[item.id] = item.pointSize
+                if SessionImageCache.shared.thumb(for: item.id) != nil { continue }
+                if self.inflight[item.id] != nil { continue }
+                if self.pendingCallbacks[item.id] != nil {
+                    self.pendingCallbacks[item.id] = onImage
                     continue
                 }
-                self.pendingCallbacks[id] = onImage
-                self.pendingOrder.append(id)
+                self.pendingCallbacks[item.id] = onImage
+                self.pendingOrder.append(item.id)
             }
             self.pumpLocked()
         }
@@ -90,6 +96,7 @@ final class ThumbLoader: @unchecked Sendable {
         inflight.removeAll()
         pendingOrder.removeAll()
         pendingCallbacks.removeAll()
+        pendingSizes.removeAll()
         activeWorkers = 0
     }
 
@@ -107,7 +114,8 @@ final class ThumbLoader: @unchecked Sendable {
         // Midway between the speed-tuned @2x and the original full-retina request.
         let deviceScale = min(max(self.scale, 1), 3)
         let effectiveScale = (2.0 + Double(deviceScale)) / 2.0
-        let side = max(1, Int(round(Double(cellPixelSize) * effectiveScale)))
+        let pointSize = pendingSizes[id] ?? 200
+        let side = max(1, Int(round(Double(pointSize) * effectiveScale)))
         let client = self.client
         activeWorkers += 1
 

@@ -1,6 +1,6 @@
 import UIKit
 
-final class GridViewController: UIViewController, UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDataSourcePrefetching, UIScrollViewDelegate, TimelineGrabberDelegate {
+final class GridViewController: UIViewController, UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDataSourcePrefetching, UIScrollViewDelegate, TimelineGrabberDelegate, MasonryLayoutDelegate {
     private let client: PhotoStreamAPIClient
     private let loader: ThumbLoader
     private var assets: [AssetSummary] = []
@@ -11,6 +11,7 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
     private var isLoadingPage = false
     private var isJumping = false
     private var collectionView: UICollectionView!
+    private let masonryLayout = MasonryLayout()
     private let scrubber = UILabel()
     private let grabber = TimelineGrabberView()
     private var lastPauseBucketID: String?
@@ -29,13 +30,14 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         title = "PhotoStream"
         navigationItem.largeTitleDisplayMode = .never
 
-        let spacing: CGFloat = 2
-        let layout = UICollectionViewFlowLayout()
-        layout.minimumInteritemSpacing = spacing
-        layout.minimumLineSpacing = spacing
-        layout.sectionInset = UIEdgeInsets(top: spacing, left: spacing, bottom: spacing, right: spacing)
+        masonryLayout.delegate = self
+        // ~3 columns on a typical iPhone; more on larger phones/iPad (Fotoro algorithm).
+        masonryLayout.idealColumnWidth = 120
+        masonryLayout.columnSpacing = 4
+        masonryLayout.rowSpacing = 4
+        masonryLayout.sectionInset = UIEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
 
-        collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
+        collectionView = UICollectionView(frame: .zero, collectionViewLayout: masonryLayout)
         collectionView.backgroundColor = .systemBackground
         collectionView.dataSource = self
         collectionView.delegate = self
@@ -73,27 +75,36 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
             grabber.widthAnchor.constraint(equalToConstant: 110),
         ])
 
-        updateCellMetrics()
+        updateThumbScale()
         Task { await loadInitial() }
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        updateCellMetrics()
-        if let layout = collectionView.collectionViewLayout as? UICollectionViewFlowLayout {
-            let spacing: CGFloat = 2
-            let width = collectionView.bounds.width - spacing * 3
-            let side = floor(width / 2)
-            layout.itemSize = CGSize(width: side, height: side)
-        }
+        updateThumbScale()
     }
 
-    private func updateCellMetrics() {
-        let spacing: CGFloat = 2
-        let width = view.bounds.width > 0 ? view.bounds.width : UIScreen.main.bounds.width
-        let side = floor((width - spacing * 3) / 2)
+    private func updateThumbScale() {
         let scale = Int(view.window?.screen.scale ?? UIScreen.main.scale)
-        Task { loader.setCellMetrics(pixelSize: side, scale: scale) }
+        loader.setScale(scale)
+    }
+
+    private func aspectRatio(for asset: AssetSummary) -> CGFloat {
+        guard asset.pixelWidth > 0 else { return 1 }
+        return CGFloat(asset.pixelHeight) / CGFloat(asset.pixelWidth)
+    }
+
+    private func thumbPointSize(for asset: AssetSummary) -> CGFloat {
+        let col = max(masonryLayout.columnWidth, masonryLayout.idealColumnWidth, 1)
+        let aspect = min(max(aspectRatio(for: asset), 0.2), 5)
+        return col * max(1, aspect)
+    }
+
+    // MARK: MasonryLayoutDelegate
+
+    func masonryLayout(_ layout: MasonryLayout, aspectRatioForItemAt index: Int) -> CGFloat {
+        guard assets.indices.contains(index) else { return 1 }
+        return aspectRatio(for: assets[index])
     }
 
     private func loadInitial() async {
@@ -254,13 +265,24 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
     private func refreshVisibleThumbs(settle: Bool) {
         let paths = collectionView.indexPathsForVisibleItems.sorted { $0.item < $1.item }
         guard !paths.isEmpty else { return }
-        var ids = paths.map { assets[$0.item].id }
+
+        var indices = paths.map(\.item)
         if let first = paths.first?.item, first > 0 {
-            ids.insert(assets[max(0, first - 2)].id, at: 0)
+            indices.insert(max(0, first - 2), at: 0)
         }
         if let last = paths.last?.item, last + 1 < assets.count {
-            ids.append(assets[min(assets.count - 1, last + 2)].id)
+            indices.append(min(assets.count - 1, last + 2))
         }
+        // Deduplicate while preserving order
+        var seen = Set<Int>()
+        indices = indices.filter { seen.insert($0).inserted }
+
+        let items: [ThumbRequest] = indices.compactMap { idx in
+            guard assets.indices.contains(idx) else { return nil }
+            let asset = assets[idx]
+            return ThumbRequest(id: asset.id, pointSize: thumbPointSize(for: asset))
+        }
+
         let collectionView = self.collectionView
         let onImage: @Sendable @MainActor (String, UIImage) -> Void = { id, image in
             for cell in collectionView?.visibleCells ?? [] {
@@ -268,9 +290,9 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
             }
         }
         if settle {
-            loader.scheduleSettle(visibleIDs: ids, onImage: onImage)
+            loader.scheduleSettle(items: items, onImage: onImage)
         } else {
-            loader.loadVisible(ids: ids, onImage: onImage)
+            loader.loadVisible(items: items, onImage: onImage)
         }
         updateScrubberLabel()
     }

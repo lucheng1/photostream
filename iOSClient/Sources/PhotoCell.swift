@@ -11,12 +11,15 @@ final class PhotoCell: UICollectionViewCell {
         super.init(frame: frame)
         contentView.backgroundColor = UIColor.secondarySystemFill
         contentView.clipsToBounds = true
+        contentView.layer.cornerRadius = 6
+        contentView.layer.cornerCurve = .continuous
 
         placeholder.backgroundColor = UIColor.tertiarySystemFill
         placeholder.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(placeholder)
 
-        imageView.contentMode = .scaleAspectFill
+        // Frames are sized to each photo's aspect ratio, so stretch-to-fill is exact.
+        imageView.contentMode = .scaleToFill
         imageView.clipsToBounds = true
         imageView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(imageView)
