@@ -33,7 +33,7 @@ final class MasonryLayout: UICollectionViewLayout {
     private var contentHeight: CGFloat = 0
     private var contentWidth: CGFloat = 0
     private(set) var columnWidth: CGFloat = 0
-    private var columnCount: Int = 1
+    private(set) var columnCount: Int = 1
 
     override var collectionViewContentSize: CGSize {
         CGSize(width: contentWidth, height: contentHeight)

@@ -18,8 +18,8 @@ final class ThumbLoader: @unchecked Sendable {
     private var settleWorkItem: DispatchWorkItem?
     private var activeWorkers = 0
 
-    /// Parallel HTTP thumb fetches (kept under typical Wi‑Fi comfort).
-    private let maxWorkers = 12
+    /// Parallel HTTP thumb fetches (LAN can handle a bit more than Wi‑Fi defaults).
+    private let maxWorkers = 20
 
     private var scale: Int = 3
 

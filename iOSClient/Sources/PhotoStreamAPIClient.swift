@@ -11,7 +11,7 @@ actor PhotoStreamAPIClient {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 20
         config.timeoutIntervalForResource = 45
-        config.httpMaximumConnectionsPerHost = 12
+        config.httpMaximumConnectionsPerHost = 20
         config.httpShouldUsePipelining = true
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         self.session = URLSession(configuration: config)

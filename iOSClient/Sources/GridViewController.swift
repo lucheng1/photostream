@@ -433,15 +433,23 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         }
         guard !paths.isEmpty else { return }
 
-        var indices = paths.map(\.item)
-        if let first = paths.first?.item, first > 0 {
-            indices.insert(max(0, first - 2), at: 0)
-        }
-        if let last = paths.last?.item, last + 1 < assets.count {
-            indices.append(min(assets.count - 1, last + 2))
-        }
+        // Visible cells first, then ~2 rows above/below so scrolling lands on warm thumbs.
+        let cols = max(1, masonryLayout.columnCount)
+        let rowPad = cols * 2
+        let visibleSorted = paths.map(\.item).sorted()
+        let lo = max(0, (visibleSorted.first ?? 0) - rowPad)
+        let hi = min(assets.count - 1, (visibleSorted.last ?? 0) + rowPad)
+
+        var indices: [Int] = []
         var seen = Set<Int>()
-        indices = indices.filter { seen.insert($0).inserted }
+        for i in visibleSorted where seen.insert(i).inserted {
+            indices.append(i)
+        }
+        if lo <= hi {
+            for i in lo...hi where seen.insert(i).inserted {
+                indices.append(i)
+            }
+        }
 
         let items: [ThumbRequest] = indices.compactMap { idx in
             guard assets.indices.contains(idx) else { return nil }
