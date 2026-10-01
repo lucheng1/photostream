@@ -5,9 +5,16 @@ import UIKit
 final class MasonryLayout: UICollectionViewLayout {
     weak var delegate: MasonryLayoutDelegate?
 
-    /// Ideal minimum column width. Column count = how many fit at this width.
+    /// Ideal minimum column width. Used when `preferredColumnCount` is nil.
     var idealColumnWidth: CGFloat = 120 {
         didSet { if oldValue != idealColumnWidth { invalidateLayout() } }
+    }
+
+    /// When set, forces this many equal-width columns (fills the available width).
+    var preferredColumnCount: Int? {
+        didSet {
+            if oldValue != preferredColumnCount { invalidateLayout() }
+        }
     }
 
     var columnSpacing: CGFloat = 4 {
@@ -41,7 +48,12 @@ final class MasonryLayout: UICollectionViewLayout {
         attributesCache.removeAll(keepingCapacity: true)
 
         let available = max(1, width - sectionInset.left - sectionInset.right)
-        let count = max(1, Int(floor((available + columnSpacing) / (idealColumnWidth + columnSpacing))))
+        let count: Int
+        if let preferred = preferredColumnCount, preferred > 0 {
+            count = preferred
+        } else {
+            count = max(1, Int(floor((available + columnSpacing) / (idealColumnWidth + columnSpacing))))
+        }
         columnCount = count
         let colW = (available - CGFloat(count - 1) * columnSpacing) / CGFloat(count)
         columnWidth = colW

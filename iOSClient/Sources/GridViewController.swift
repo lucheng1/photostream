@@ -30,8 +30,8 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         navigationItem.largeTitleDisplayMode = .never
 
         masonryLayout.delegate = self
-        // ~3 columns on a typical iPhone; more on larger phones/iPad (Fotoro algorithm).
-        masonryLayout.idealColumnWidth = 120
+        // Portrait ≈ 2 columns; landscape ≈ 4 (set in syncColumnCountForOrientation).
+        masonryLayout.preferredColumnCount = 2
         masonryLayout.columnSpacing = 4
         masonryLayout.rowSpacing = 4
         masonryLayout.sectionInset = UIEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
@@ -86,7 +86,30 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        syncColumnCountForOrientation()
         updateThumbScale()
+    }
+
+    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        coordinator.animate(alongsideTransition: { _ in
+            self.syncColumnCountForOrientation(width: size.width, height: size.height)
+            self.masonryLayout.invalidateLayout()
+        }, completion: { _ in
+            self.refreshVisibleThumbs(settle: true)
+        })
+    }
+
+    /// Portrait stays open (~2×5); landscape uses 4 columns instead of ~5 so it feels less busy.
+    private func syncColumnCountForOrientation(width: CGFloat? = nil, height: CGFloat? = nil) {
+        let w = width ?? view.bounds.width
+        let h = height ?? view.bounds.height
+        guard w > 0, h > 0 else { return }
+        let landscape = w > h
+        let columns = landscape ? 4 : 2
+        if masonryLayout.preferredColumnCount != columns {
+            masonryLayout.preferredColumnCount = columns
+        }
     }
 
     override func viewWillAppear(_ animated: Bool) {
