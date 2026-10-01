@@ -181,12 +181,9 @@ struct PairingView: View {
                         .keyboardType(.numbersAndPunctuation)
                 }
                 Section("PIN from Mac menu bar") {
-                    TextField("4-digit PIN (or PIN+9 for folder)", text: $model.pin)
+                    TextField("4-digit PIN", text: $model.pin)
                         .keyboardType(.numberPad)
                         .textContentType(.oneTimeCode)
-                    Text("Photos: enter the 4-digit PIN. Folder: add a 9 after it (e.g. 12349).")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
                     Button("Connect") { model.pair() }
                         .disabled(model.pin.count < 4 || (model.selected == nil && model.manualHost.isEmpty))
                 }
