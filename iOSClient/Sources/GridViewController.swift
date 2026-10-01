@@ -85,6 +85,14 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         updateThumbScale()
     }
 
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // Returning from the full-image viewer (or first appear) — resume any thumbs
+        // that were cancelled mid-load when a scroll was interrupted by a tap.
+        loader.setFastScrolling(false)
+        refreshVisibleThumbs(settle: true)
+    }
+
     private func updateThumbScale() {
         let scale = Int(view.window?.screen.scale ?? UIScreen.main.scale)
         loader.setScale(scale)
@@ -253,8 +261,11 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
     }
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        // Stop velocity-gating so cancelled thumb work can resume after dismiss.
+        loader.setFastScrolling(false)
         let asset = assets[indexPath.item]
         let thumb = SessionImageCache.shared.thumb(for: asset.id)
+            ?? SessionImageCache.shared.thumbFromDisk(for: asset.id)
         let viewer = FullImageViewController(
             client: client,
             browser: self,
@@ -262,6 +273,7 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
             placeholder: thumb
         )
         viewer.modalPresentationStyle = .fullScreen
+        viewer.modalPresentationCapturesStatusBarAppearance = true
         present(viewer, animated: true)
     }
 
@@ -278,6 +290,16 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
     }
 
     func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
+        // Fill thumb as soon as a cell appears (covers return-from-viewer and reuse).
+        if let photoCell = cell as? PhotoCell, assets.indices.contains(indexPath.item) {
+            let asset = assets[indexPath.item]
+            if photoCell.imageView.image == nil {
+                if let image = SessionImageCache.shared.thumb(for: asset.id)
+                    ?? SessionImageCache.shared.thumbFromDisk(for: asset.id) {
+                    photoCell.apply(image: image, for: asset.id)
+                }
+            }
+        }
         if indexPath.item > assets.count - 20 {
             Task {
                 do { try await loadMoreIfNeeded() } catch { /* ignore while scrolling */ }
