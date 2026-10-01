@@ -44,6 +44,16 @@ final class ThumbLoader: @unchecked Sendable {
         }
     }
 
+    /// Clears velocity-gating and immediately runs a visible-thumb load (no settle delay).
+    func resumeAndLoad(items: [ThumbRequest], onImage: @escaping @Sendable @MainActor (String, UIImage) -> Void) {
+        queue.async {
+            self.isFastScrolling = false
+            self.settleWorkItem?.cancel()
+            self.settleWorkItem = nil
+            self.loadVisibleLocked(items: items, onImage: onImage)
+        }
+    }
+
     func scheduleSettle(items: [ThumbRequest], onImage: @escaping @Sendable @MainActor (String, UIImage) -> Void) {
         queue.async {
             self.settleWorkItem?.cancel()
@@ -57,38 +67,41 @@ final class ThumbLoader: @unchecked Sendable {
 
     func loadVisible(items: [ThumbRequest], onImage: @escaping @Sendable @MainActor (String, UIImage) -> Void) {
         queue.async {
-            guard !self.isFastScrolling else { return }
-            let wanted = Set(items.map(\.id))
-
-            for (id, task) in self.inflight where !wanted.contains(id) {
-                task.cancel()
-                self.inflight[id] = nil
-            }
-            self.pendingOrder.removeAll { !wanted.contains($0) }
-            for id in self.pendingCallbacks.keys where !wanted.contains(id) {
-                self.pendingCallbacks[id] = nil
-                self.pendingSizes[id] = nil
-            }
-
-            for item in items {
-                self.pendingSizes[item.id] = item.pointSize
-                if SessionImageCache.shared.thumb(for: item.id) != nil { continue }
-                // Warm from disk without blocking the loader queue on decode for every id.
-                if let disk = SessionImageCache.shared.thumbFromDisk(for: item.id) {
-                    let cb = onImage
-                    Task { @MainActor in cb(item.id, disk) }
-                    continue
-                }
-                if self.inflight[item.id] != nil { continue }
-                if self.pendingCallbacks[item.id] != nil {
-                    self.pendingCallbacks[item.id] = onImage
-                    continue
-                }
-                self.pendingCallbacks[item.id] = onImage
-                self.pendingOrder.append(item.id)
-            }
-            self.pumpLocked()
+            self.loadVisibleLocked(items: items, onImage: onImage)
         }
+    }
+
+    private func loadVisibleLocked(items: [ThumbRequest], onImage: @escaping @Sendable @MainActor (String, UIImage) -> Void) {
+        guard !self.isFastScrolling else { return }
+        let wanted = Set(items.map(\.id))
+
+        for (id, task) in self.inflight where !wanted.contains(id) {
+            task.cancel()
+            self.inflight[id] = nil
+        }
+        self.pendingOrder.removeAll { !wanted.contains($0) }
+        for id in self.pendingCallbacks.keys where !wanted.contains(id) {
+            self.pendingCallbacks[id] = nil
+            self.pendingSizes[id] = nil
+        }
+
+        for item in items {
+            self.pendingSizes[item.id] = item.pointSize
+            if SessionImageCache.shared.thumb(for: item.id) != nil { continue }
+            if let disk = SessionImageCache.shared.thumbFromDisk(for: item.id) {
+                let cb = onImage
+                Task { @MainActor in cb(item.id, disk) }
+                continue
+            }
+            if self.inflight[item.id] != nil { continue }
+            if self.pendingCallbacks[item.id] != nil {
+                self.pendingCallbacks[item.id] = onImage
+                continue
+            }
+            self.pendingCallbacks[item.id] = onImage
+            self.pendingOrder.append(item.id)
+        }
+        self.pumpLocked()
     }
 
     func cancelAll() {

@@ -230,10 +230,14 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
             }
             updateScrubberLabel()
             grabber.syncProgress(toLibraryIndex: startIndex)
+            loader.setFastScrolling(false)
             if prefetchThumbs {
-                refreshVisibleThumbs(settle: true)
+                await Task.yield()
+                collectionView.layoutIfNeeded()
+                refreshVisibleThumbs(settle: true, force: true)
             }
         } catch {
+            loader.setFastScrolling(false)
             presentError(error)
         }
     }
@@ -376,8 +380,23 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         return paths[paths.count / 2].item
     }
 
-    private func refreshVisibleThumbs(settle: Bool) {
-        let paths = collectionView.indexPathsForVisibleItems.sorted { $0.item < $1.item }
+    private func refreshVisibleThumbs(settle: Bool, force: Bool = false) {
+        var paths = collectionView.indexPathsForVisibleItems.sorted { $0.item < $1.item }
+        if paths.isEmpty, !assets.isEmpty {
+            // Right after a grabber jump, visible index paths can briefly be empty.
+            collectionView.layoutIfNeeded()
+            paths = collectionView.indexPathsForVisibleItems.sorted { $0.item < $1.item }
+        }
+        if paths.isEmpty, !assets.isEmpty {
+            // Estimate a window from content offset / average row height.
+            let colW = max(masonryLayout.columnWidth, 1)
+            let approxRow = colW * 1.2 + masonryLayout.rowSpacing
+            let cols = max(1, Int(round(collectionView.bounds.width / (colW + masonryLayout.columnSpacing))))
+            let first = max(0, Int(collectionView.contentOffset.y / max(approxRow, 1)) * cols)
+            let visibleCount = max(cols * 6, 12)
+            let last = min(assets.count - 1, first + visibleCount)
+            paths = (first...last).map { IndexPath(item: $0, section: 0) }
+        }
         guard !paths.isEmpty else { return }
 
         var indices = paths.map(\.item)
@@ -387,7 +406,6 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         if let last = paths.last?.item, last + 1 < assets.count {
             indices.append(min(assets.count - 1, last + 2))
         }
-        // Deduplicate while preserving order
         var seen = Set<Int>()
         indices = indices.filter { seen.insert($0).inserted }
 
@@ -396,6 +414,7 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
             let asset = assets[idx]
             return ThumbRequest(id: asset.id, pointSize: thumbPointSize(for: asset))
         }
+        guard !items.isEmpty else { return }
 
         let collectionView = self.collectionView
         let onImage: @Sendable @MainActor (String, UIImage) -> Void = { id, image in
@@ -403,7 +422,9 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
                 (cell as? PhotoCell)?.apply(image: image, for: id)
             }
         }
-        if settle {
+        if force {
+            loader.resumeAndLoad(items: items, onImage: onImage)
+        } else if settle {
             loader.scheduleSettle(items: items, onImage: onImage)
         } else {
             loader.loadVisible(items: items, onImage: onImage)
@@ -471,11 +492,14 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
 
     func timelineGrabber(_ grabber: TimelineGrabberView, didEndScrubAt bucket: TimelineBucket) {
         Task {
+            // Always clear velocity-gating from scrub-begin so thumbs can load.
+            loader.setFastScrolling(false)
             if lastPauseBucketID != bucket.id {
                 await jumpToLibraryIndex(bucket.startIndex, prefetchThumbs: true)
             } else {
-                loader.setFastScrolling(false)
-                refreshVisibleThumbs(settle: true)
+                // Pause already jumped the window; still force a thumb refresh on release.
+                collectionView.layoutIfNeeded()
+                refreshVisibleThumbs(settle: true, force: true)
             }
             lastPauseBucketID = nil
             hideScrubberSoon()
