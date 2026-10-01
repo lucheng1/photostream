@@ -25,6 +25,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/PhotoStream"
 cp "$ROOT/MacServer/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+printf 'APPL????' > "$APP/Contents/PkgInfo"
 chmod +x "$APP/Contents/MacOS/PhotoStream"
 
 # Ad-hoc sign so TCC Photos prompt can attach to the bundle
@@ -32,4 +34,4 @@ codesign --force --deep --sign - "$APP" 2>/dev/null || true
 
 echo "Launching $APP"
 open "$APP"
-echo "Look for the PS menu bar item. Note the PIN, then connect from the iPhone app."
+echo "Look for the PhotoStream menu bar item. Note the PIN, then connect from the iPhone app."

@@ -36,11 +36,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            button.title = "PS"
+            if let icon = NSImage(named: "AppIcon") ?? loadBundledIcon() {
+                icon.isTemplate = false
+                icon.size = NSSize(width: 18, height: 18)
+                button.image = icon
+                button.imagePosition = .imageOnly
+            } else {
+                button.title = "PS"
+            }
             button.toolTip = "PhotoStream Server"
         }
         statusItem = item
         rebuildMenu()
+    }
+
+    private func loadBundledIcon() -> NSImage? {
+        guard let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns") else { return nil }
+        return NSImage(contentsOf: url)
     }
 
     private func rebuildMenu() {

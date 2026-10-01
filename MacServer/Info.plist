@@ -6,6 +6,10 @@
 	<string>app.photostream.server</string>
 	<key>CFBundleName</key>
 	<string>PhotoStream</string>
+	<key>CFBundleDisplayName</key>
+	<string>PhotoStream</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

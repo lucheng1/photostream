@@ -34,6 +34,9 @@ jobs:
           mkdir -p "$APP/Contents/MacOS"
           cp "$BIN" "$APP/Contents/MacOS/PhotoStream"
           cp MacServer/Info.plist "$APP/Contents/Info.plist"
+          mkdir -p "$APP/Contents/Resources"
+          cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+          printf 'APPL????' > "$APP/Contents/PkgInfo"
           chmod +x "$APP/Contents/MacOS/PhotoStream"
           codesign --force --deep --sign - "$APP"
           ditto -c -k --keepParent "$APP" dist/PhotoStream-macOS.zip
