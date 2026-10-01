@@ -12,12 +12,16 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
     private var index: Int
     private var currentID: String
 
+    /// Holds the scroll view; receives drag transforms so the root view's pan
+    /// gesture keeps a stable coordinate space (transforming `view` inverted swipes).
+    private let contentContainer = UIView()
     private let scrollView = UIScrollView()
     private let imageView = UIImageView()
     private let closeButton = UIButton(type: .system)
     private let spinner = UIActivityIndicatorView(style: .large)
     private var loadTask: Task<Void, Never>?
     private var isTransitioning = false
+    private var navPan: UIPanGestureRecognizer!
 
     init(
         client: PhotoStreamAPIClient,
@@ -40,15 +44,13 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
         browser?.browseAssets ?? []
     }
 
-    private var currentAsset: AssetSummary? {
-        guard assets.indices.contains(index) else { return nil }
-        return assets[index]
-    }
-
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
         view.clipsToBounds = true
+
+        contentContainer.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(contentContainer)
 
         scrollView.delegate = self
         scrollView.minimumZoomScale = 1
@@ -57,7 +59,7 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
         scrollView.showsHorizontalScrollIndicator = false
         scrollView.showsVerticalScrollIndicator = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(scrollView)
+        contentContainer.addSubview(scrollView)
 
         imageView.contentMode = .scaleAspectFit
         imageView.isUserInteractionEnabled = true
@@ -78,15 +80,21 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
         doubleTap.numberOfTapsRequired = 2
         scrollView.addGestureRecognizer(doubleTap)
 
-        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
-        pan.delegate = self
-        view.addGestureRecognizer(pan)
+        navPan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        navPan.delegate = self
+        // Prefer nav swipe over scroll-view pan while not zoomed.
+        scrollView.panGestureRecognizer.require(toFail: navPan)
+        view.addGestureRecognizer(navPan)
 
         NSLayoutConstraint.activate([
-            scrollView.topAnchor.constraint(equalTo: view.topAnchor),
-            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            contentContainer.topAnchor.constraint(equalTo: view.topAnchor),
+            contentContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            contentContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            contentContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            scrollView.topAnchor.constraint(equalTo: contentContainer.topAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
             closeButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
             closeButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
@@ -174,23 +182,29 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
         }
     }
 
-    /// Swipe down / right → next (earlier date); swipe up / left → prev (more recent).
+    /// Finger swipe down / right → next (earlier date).
+    /// Finger swipe up / left → prev (more recent date).
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
         guard scrollView.zoomScale <= 1.05, !isTransitioning else { return }
-        let translation = gesture.translation(in: view)
-        let velocity = gesture.velocity(in: view)
+        // Read in the window so transforms on contentContainer cannot invert axes.
+        let translation = gesture.translation(in: view.window ?? view)
+        let velocity = gesture.velocity(in: view.window ?? view)
 
         switch gesture.state {
         case .changed:
-            view.transform = CGAffineTransform(translationX: translation.x * 0.45, y: translation.y * 0.45)
+            contentContainer.transform = CGAffineTransform(
+                translationX: translation.x * 0.45,
+                y: translation.y * 0.45
+            )
             let distance = hypot(translation.x, translation.y)
-            view.alpha = max(0.6, 1 - distance / 280)
+            contentContainer.alpha = max(0.6, 1 - distance / 280)
 
         case .ended, .cancelled:
-            // Short swipes — small travel or a light flick is enough.
-            let threshold: CGFloat = 28
-            let velocityThreshold: CGFloat = 220
+            let threshold: CGFloat = 24
+            let velocityThreshold: CGFloat = 180
             let dominantHorizontal = abs(translation.x) >= abs(translation.y)
+
+            // Positive X = finger moved right; positive Y = finger moved down.
             let goNext: Bool
             let goPrev: Bool
             if dominantHorizontal {
@@ -202,15 +216,13 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
             }
 
             if goNext {
-                // Next = earlier chronologically (higher index in newest-first library).
                 navigate(delta: 1, from: translation)
             } else if goPrev {
-                // Prev = more recent chronologically (lower index).
                 navigate(delta: -1, from: translation)
             } else {
                 UIView.animate(withDuration: 0.18) {
-                    self.view.transform = .identity
-                    self.view.alpha = 1
+                    self.contentContainer.transform = .identity
+                    self.contentContainer.alpha = 1
                 }
             }
 
@@ -220,12 +232,12 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
     }
 
     private func navigate(delta: Int, from translation: CGPoint) {
-        // Newest-first library: -1 = more recent (prev), +1 = earlier (next).
+        // Newest-first: +1 = earlier date (next), -1 = more recent (prev).
         let target = index + delta
         guard assets.indices.contains(target), target != index else {
             UIView.animate(withDuration: 0.2, delay: 0, usingSpringWithDamping: 0.75, initialSpringVelocity: 0.5) {
-                self.view.transform = .identity
-                self.view.alpha = 1
+                self.contentContainer.transform = .identity
+                self.contentContainer.alpha = 1
             }
             return
         }
@@ -239,14 +251,14 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
             : translation.y * 0.2
 
         UIView.animate(withDuration: 0.14, animations: {
-            self.view.transform = CGAffineTransform(translationX: exitX * 0.45, y: exitY * 0.45)
-            self.view.alpha = 0.15
+            self.contentContainer.transform = CGAffineTransform(translationX: exitX * 0.45, y: exitY * 0.45)
+            self.contentContainer.alpha = 0.15
         }, completion: { _ in
             self.applyAsset(at: target)
-            self.view.transform = CGAffineTransform(translationX: -exitX * 0.2, y: -exitY * 0.2)
+            self.contentContainer.transform = CGAffineTransform(translationX: -exitX * 0.2, y: -exitY * 0.2)
             UIView.animate(withDuration: 0.16, animations: {
-                self.view.transform = .identity
-                self.view.alpha = 1
+                self.contentContainer.transform = .identity
+                self.contentContainer.alpha = 1
             }, completion: { _ in
                 self.isTransitioning = false
             })
@@ -284,7 +296,6 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
            let newIdx = refreshed.firstIndex(where: { $0.id == currentID }) {
             index = newIdx
         }
-        // Also backfill newer photos when near the start of a jumped window.
         if index < 12 {
             await browser?.browseLoadPrevious()
             if let refreshed = browser?.browseAssets,
@@ -308,10 +319,10 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
 
 extension FullImageViewController: UIGestureRecognizerDelegate {
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
+        guard let pan = gestureRecognizer as? UIPanGestureRecognizer, pan == navPan else { return true }
         guard scrollView.zoomScale <= 1.05, !isTransitioning else { return false }
-        let v = pan.velocity(in: view)
-        return hypot(v.x, v.y) > 40
+        let v = pan.velocity(in: view.window ?? view)
+        return hypot(v.x, v.y) > 30
     }
 
     func gestureRecognizer(
