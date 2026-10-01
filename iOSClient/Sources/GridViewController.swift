@@ -1,6 +1,6 @@
 import UIKit
 
-final class GridViewController: UIViewController, UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDataSourcePrefetching, UIScrollViewDelegate, TimelineGrabberDelegate, MasonryLayoutDelegate {
+final class GridViewController: UIViewController, UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDataSourcePrefetching, UIScrollViewDelegate, TimelineGrabberDelegate, MasonryLayoutDelegate, FullImageBrowsing {
     private let client: PhotoStreamAPIClient
     private let loader: ThumbLoader
     private var assets: [AssetSummary] = []
@@ -199,9 +199,22 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         let asset = assets[indexPath.item]
         let thumb = SessionImageCache.shared.thumb(for: asset.id)
-        let viewer = FullImageViewController(client: client, asset: asset, placeholder: thumb)
+        let viewer = FullImageViewController(
+            client: client,
+            browser: self,
+            index: indexPath.item,
+            placeholder: thumb
+        )
         viewer.modalPresentationStyle = .fullScreen
         present(viewer, animated: true)
+    }
+
+    // MARK: FullImageBrowsing
+
+    var browseAssets: [AssetSummary] { assets }
+
+    func browseLoadMore() async {
+        do { try await loadMoreIfNeeded() } catch { /* ignore */ }
     }
 
     func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {

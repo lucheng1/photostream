@@ -1,27 +1,53 @@
 import UIKit
 
+protocol FullImageBrowsing: AnyObject {
+    var browseAssets: [AssetSummary] { get }
+    func browseLoadMore() async
+}
+
 final class FullImageViewController: UIViewController, UIScrollViewDelegate {
     private let client: PhotoStreamAPIClient
-    private let asset: AssetSummary
-    private let placeholder: UIImage?
+    private weak var browser: FullImageBrowsing?
+    private var index: Int
+    private var currentID: String
 
     private let scrollView = UIScrollView()
     private let imageView = UIImageView()
     private let closeButton = UIButton(type: .system)
     private let spinner = UIActivityIndicatorView(style: .large)
+    private var loadTask: Task<Void, Never>?
+    private var isTransitioning = false
 
-    init(client: PhotoStreamAPIClient, asset: AssetSummary, placeholder: UIImage?) {
+    init(
+        client: PhotoStreamAPIClient,
+        browser: FullImageBrowsing,
+        index: Int,
+        placeholder: UIImage?
+    ) {
         self.client = client
-        self.asset = asset
-        self.placeholder = placeholder
+        self.browser = browser
+        self.index = index
+        let asset = browser.browseAssets[index]
+        self.currentID = asset.id
         super.init(nibName: nil, bundle: nil)
+        imageView.image = placeholder
     }
 
     required init?(coder: NSCoder) { nil }
 
+    private var assets: [AssetSummary] {
+        browser?.browseAssets ?? []
+    }
+
+    private var currentAsset: AssetSummary? {
+        guard assets.indices.contains(index) else { return nil }
+        return assets[index]
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
+        view.clipsToBounds = true
 
         scrollView.delegate = self
         scrollView.minimumZoomScale = 1
@@ -34,7 +60,6 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
 
         imageView.contentMode = .scaleAspectFit
         imageView.isUserInteractionEnabled = true
-        imageView.image = placeholder
         scrollView.addSubview(imageView)
 
         closeButton.setTitle("Close", for: .normal)
@@ -67,7 +92,7 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
             spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor),
         ])
 
-        Task { await loadFull() }
+        Task { await loadFull(for: currentID) }
     }
 
     override func viewDidLayoutSubviews() {
@@ -92,25 +117,29 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
         scrollView.zoomScale = 1
     }
 
-    private func loadFull() async {
-        if let cached = SessionImageCache.shared.full(for: asset.id) {
+    private func loadFull(for id: String) async {
+        if let cached = SessionImageCache.shared.full(for: id) {
+            guard currentID == id else { return }
             imageView.image = cached
             layoutImage()
             return
         }
         spinner.startAnimating()
         do {
-            let data = try await client.fullImage(assetID: asset.id)
+            let data = try await client.fullImage(assetID: id)
+            guard currentID == id else { return }
             let image = UIImage(data: data)
             if let image {
-                SessionImageCache.shared.setFull(image, for: asset.id)
+                SessionImageCache.shared.setFull(image, for: id)
                 imageView.image = image
                 layoutImage()
             }
         } catch {
-            // Keep placeholder
+            // Keep placeholder / prior image
         }
-        spinner.stopAnimating()
+        if currentID == id {
+            spinner.stopAnimating()
+        }
     }
 
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
@@ -144,26 +173,123 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
         }
     }
 
+    /// Swipe down / right → next; swipe up / left → previous.
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
-        guard scrollView.zoomScale <= 1.05 else { return }
+        guard scrollView.zoomScale <= 1.05, !isTransitioning else { return }
         let translation = gesture.translation(in: view)
+        let velocity = gesture.velocity(in: view)
+
         switch gesture.state {
         case .changed:
-            if translation.y > 0 {
-                view.transform = CGAffineTransform(translationX: 0, y: translation.y)
-                view.alpha = max(0.4, 1 - translation.y / 300)
-            }
+            view.transform = CGAffineTransform(translationX: translation.x * 0.35, y: translation.y * 0.35)
+            let distance = hypot(translation.x, translation.y)
+            view.alpha = max(0.55, 1 - distance / 500)
+
         case .ended, .cancelled:
-            if translation.y > 140 {
-                dismiss(animated: true)
+            let threshold: CGFloat = 90
+            let velocityThreshold: CGFloat = 700
+            let dominantHorizontal = abs(translation.x) >= abs(translation.y)
+            let goNext: Bool
+            let goPrev: Bool
+            if dominantHorizontal {
+                goNext = translation.x > threshold || velocity.x > velocityThreshold
+                goPrev = translation.x < -threshold || velocity.x < -velocityThreshold
+            } else {
+                goNext = translation.y > threshold || velocity.y > velocityThreshold
+                goPrev = translation.y < -threshold || velocity.y < -velocityThreshold
+            }
+
+            if goNext {
+                navigate(delta: 1, from: translation)
+            } else if goPrev {
+                navigate(delta: -1, from: translation)
             } else {
                 UIView.animate(withDuration: 0.2) {
                     self.view.transform = .identity
                     self.view.alpha = 1
                 }
             }
+
         default:
             break
+        }
+    }
+
+    private func navigate(delta: Int, from translation: CGPoint) {
+        let target = index + delta
+        guard assets.indices.contains(target) else {
+            UIView.animate(withDuration: 0.22, delay: 0, usingSpringWithDamping: 0.7, initialSpringVelocity: 0.4) {
+                self.view.transform = .identity
+                self.view.alpha = 1
+            }
+            return
+        }
+
+        isTransitioning = true
+        let exitX: CGFloat = abs(translation.x) >= abs(translation.y)
+            ? (delta > 0 ? view.bounds.width : -view.bounds.width)
+            : translation.x * 0.2
+        let exitY: CGFloat = abs(translation.y) > abs(translation.x)
+            ? (delta > 0 ? view.bounds.height : -view.bounds.height)
+            : translation.y * 0.2
+
+        UIView.animate(withDuration: 0.18, animations: {
+            self.view.transform = CGAffineTransform(translationX: exitX * 0.55, y: exitY * 0.55)
+            self.view.alpha = 0.15
+        }, completion: { _ in
+            self.applyAsset(at: target)
+            self.view.transform = CGAffineTransform(translationX: -exitX * 0.25, y: -exitY * 0.25)
+            UIView.animate(withDuration: 0.22, animations: {
+                self.view.transform = .identity
+                self.view.alpha = 1
+            }, completion: { _ in
+                self.isTransitioning = false
+            })
+            Task { await self.prefetchNeighbors() }
+        })
+    }
+
+    private func applyAsset(at newIndex: Int) {
+        guard assets.indices.contains(newIndex) else { return }
+        index = newIndex
+        let asset = assets[newIndex]
+        currentID = asset.id
+        scrollView.setZoomScale(1, animated: false)
+        loadTask?.cancel()
+        spinner.stopAnimating()
+
+        if let full = SessionImageCache.shared.full(for: asset.id) {
+            imageView.image = full
+        } else if let thumb = SessionImageCache.shared.thumb(for: asset.id) {
+            imageView.image = thumb
+        } else {
+            imageView.image = nil
+        }
+        layoutImage()
+
+        let id = asset.id
+        loadTask = Task {
+            await loadFull(for: id)
+        }
+    }
+
+    private func prefetchNeighbors() async {
+        await browser?.browseLoadMore()
+        // Re-sync index if the underlying window grew/shifted while keeping current id.
+        if let refreshed = browser?.browseAssets,
+           let newIdx = refreshed.firstIndex(where: { $0.id == currentID }) {
+            index = newIdx
+        }
+        let neighbors = [index - 1, index + 1].filter { assets.indices.contains($0) }
+        for i in neighbors {
+            let id = assets[i].id
+            if SessionImageCache.shared.full(for: id) != nil { continue }
+            Task {
+                if let data = try? await client.fullImage(assetID: id),
+                   let image = UIImage(data: data) {
+                    SessionImageCache.shared.setFull(image, for: id)
+                }
+            }
         }
     }
 }
@@ -171,7 +297,16 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
 extension FullImageViewController: UIGestureRecognizerDelegate {
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
+        guard scrollView.zoomScale <= 1.05, !isTransitioning else { return false }
         let v = pan.velocity(in: view)
-        return abs(v.y) > abs(v.x) && v.y > 0 && scrollView.zoomScale <= 1.05
+        // Require a clear directional intent so light touches don't steal zoom.
+        return hypot(v.x, v.y) > 120
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        false
     }
 }
