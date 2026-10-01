@@ -28,7 +28,9 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate, UIG
     private var navPan: UIPanGestureRecognizer!
     private var isTransitioning = false
     private var activeDelta: Int = 0 // +1 next (older), -1 prev (newer), 0 none
+    private var lastSwipeDelta: Int = 1 // prefer prefetching forward after open
     private var dragAxisHorizontal = true
+    private let prefetchDepth = 2
 
     init(
         client: PhotoStreamAPIClient,
@@ -285,7 +287,10 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate, UIG
         if hasNeighbor {
             if activeDelta != delta {
                 activeDelta = delta
+                lastSwipeDelta = delta
                 prepareAdjacent(for: target)
+                // Warm the next couple of photos further in this swipe direction.
+                prefetchAhead(direction: delta, count: prefetchDepth)
             }
         } else {
             activeDelta = 0
@@ -386,6 +391,7 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate, UIG
         } completion: { _ in
             self.promoteAdjacent(to: target)
             self.isTransitioning = false
+            self.lastSwipeDelta = delta
             self.activeDelta = 0
             Task { await self.prefetchNeighbors() }
         }
@@ -459,10 +465,25 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate, UIG
                 index = newIdx
             }
         }
-        let neighbors = [index - 1, index + 1].filter { assets.indices.contains($0) }
-        for i in neighbors {
+        // Always keep a couple cached on both sides; prioritize last swipe direction.
+        let primary = lastSwipeDelta == 0 ? 1 : lastSwipeDelta
+        prefetchAhead(direction: primary, count: prefetchDepth)
+        prefetchAhead(direction: -primary, count: prefetchDepth)
+    }
+
+    /// Cache full images for the next `count` photos in `direction` (+1 next, -1 prev).
+    private func prefetchAhead(direction: Int, count: Int) {
+        guard direction != 0, count > 0 else { return }
+        var ids: [String] = []
+        for step in 1...count {
+            let i = index + direction * step
+            guard assets.indices.contains(i) else { break }
             let id = assets[i].id
-            if SessionImageCache.shared.full(for: id) != nil { continue }
+            if SessionImageCache.shared.full(for: id) == nil {
+                ids.append(id)
+            }
+        }
+        for id in ids {
             Task {
                 if let data = try? await client.fullImage(assetID: id),
                    let image = UIImage(data: data) {
