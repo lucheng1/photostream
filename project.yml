@@ -17,8 +17,8 @@ targets:
       PRODUCT_BUNDLE_IDENTIFIER: app.photostream.ios
       INFOPLIST_FILE: iOSClient/Info.plist
       TARGETED_DEVICE_FAMILY: "1"
-      SWIFT_STRICT_CONCURRENCY: targeted
-      CODE_SIGN_STYLE: Automatic
+      SWIFT_STRICT_CONCURRENCY: minimal
+      SWIFT_VERSION: "5.0"
     info:
       path: iOSClient/Info.plist
       properties:

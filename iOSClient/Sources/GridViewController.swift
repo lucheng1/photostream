@@ -82,7 +82,7 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         let width = view.bounds.width > 0 ? view.bounds.width : UIScreen.main.bounds.width
         let side = floor((width - spacing * 3) / 2)
         let scale = Int(view.window?.screen.scale ?? UIScreen.main.scale)
-        Task { await loader.setCellMetrics(pixelSize: side, scale: scale) }
+        Task { loader.setCellMetrics(pixelSize: side, scale: scale) }
     }
 
     private func loadInitial() async {
@@ -167,7 +167,7 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         // use isDecelerating + pan velocity.
         let panV = abs(scrollView.panGestureRecognizer.velocity(in: view).y)
         let fast = panV > 1200 || (scrollView.isDecelerating && panV > 400)
-        Task { await loader.setFastScrolling(fast) }
+        Task { loader.setFastScrolling(fast) }
         updateScrubber(visible: fast || scrollView.isDragging || scrollView.isDecelerating)
         if !fast && !scrollView.isDecelerating && !scrollView.isDragging {
             refreshVisibleThumbs(settle: false)
@@ -180,14 +180,14 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         if !decelerate {
-            Task { await loader.setFastScrolling(false) }
+            loader.setFastScrolling(false)
             refreshVisibleThumbs(settle: true)
             hideScrubberSoon()
         }
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-        Task { await loader.setFastScrolling(false) }
+        loader.setFastScrolling(false)
         refreshVisibleThumbs(settle: true)
         hideScrubberSoon()
     }
@@ -209,12 +209,10 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
                 (cell as? PhotoCell)?.apply(image: image, for: id)
             }
         }
-        Task {
-            if settle {
-                await loader.scheduleSettle(visibleIDs: ids, onImage: onImage)
-            } else {
-                await loader.loadVisible(ids: ids, onImage: onImage)
-            }
+        if settle {
+            loader.scheduleSettle(visibleIDs: ids, onImage: onImage)
+        } else {
+            loader.loadVisible(ids: ids, onImage: onImage)
         }
         updateScrubberLabel()
     }
