@@ -272,17 +272,8 @@ final class GridViewController: UIViewController, UICollectionViewDataSource, UI
         do { try await loadMoreIfNeeded() } catch { /* ignore */ }
     }
 
-    func browseGridNeighbor(fromDataIndex index: Int, delta: Int) -> Int? {
-        // Ensure layout attributes exist before reading visual order.
-        collectionView.layoutIfNeeded()
-        let order = masonryLayout.indicesInVisualOrder()
-        guard let pos = order.firstIndex(of: index) else {
-            let fallback = index + delta
-            return assets.indices.contains(fallback) ? fallback : nil
-        }
-        let nextPos = pos + delta
-        guard order.indices.contains(nextPos) else { return nil }
-        return order[nextPos]
+    func browseLoadPrevious() async {
+        do { try await loadPreviousIfNeeded() } catch { /* ignore */ }
     }
 
     func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {

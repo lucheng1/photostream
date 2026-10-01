@@ -3,9 +3,7 @@ import UIKit
 protocol FullImageBrowsing: AnyObject {
     var browseAssets: [AssetSummary] { get }
     func browseLoadMore() async
-    /// Neighbor in visual grid order (not chronological / data-index order).
-    /// `delta` +1 = next cell in the grid, -1 = previous cell.
-    func browseGridNeighbor(fromDataIndex index: Int, delta: Int) -> Int?
+    func browseLoadPrevious() async
 }
 
 final class FullImageViewController: UIViewController, UIScrollViewDelegate {
@@ -176,7 +174,7 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
         }
     }
 
-    /// Swipe down / right → next grid cell; swipe up / left → previous grid cell.
+    /// Swipe down / right → next (earlier date); swipe up / left → prev (more recent).
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
         guard scrollView.zoomScale <= 1.05, !isTransitioning else { return }
         let translation = gesture.translation(in: view)
@@ -204,8 +202,10 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
             }
 
             if goNext {
+                // Next = earlier chronologically (higher index in newest-first library).
                 navigate(delta: 1, from: translation)
             } else if goPrev {
+                // Prev = more recent chronologically (lower index).
                 navigate(delta: -1, from: translation)
             } else {
                 UIView.animate(withDuration: 0.18) {
@@ -220,8 +220,8 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
     }
 
     private func navigate(delta: Int, from translation: CGPoint) {
-        // Resolve via visual grid order (masonry top→bottom, left→right), not date/index order.
-        let target = browser?.browseGridNeighbor(fromDataIndex: index, delta: delta) ?? (index + delta)
+        // Newest-first library: -1 = more recent (prev), +1 = earlier (next).
+        let target = index + delta
         guard assets.indices.contains(target), target != index else {
             UIView.animate(withDuration: 0.2, delay: 0, usingSpringWithDamping: 0.75, initialSpringVelocity: 0.5) {
                 self.view.transform = .identity
@@ -284,10 +284,15 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate {
            let newIdx = refreshed.firstIndex(where: { $0.id == currentID }) {
             index = newIdx
         }
-        let neighbors = [browser?.browseGridNeighbor(fromDataIndex: index, delta: -1),
-                         browser?.browseGridNeighbor(fromDataIndex: index, delta: 1)]
-            .compactMap { $0 }
-            .filter { assets.indices.contains($0) }
+        // Also backfill newer photos when near the start of a jumped window.
+        if index < 12 {
+            await browser?.browseLoadPrevious()
+            if let refreshed = browser?.browseAssets,
+               let newIdx = refreshed.firstIndex(where: { $0.id == currentID }) {
+                index = newIdx
+            }
+        }
+        let neighbors = [index - 1, index + 1].filter { assets.indices.contains($0) }
         for i in neighbors {
             let id = assets[i].id
             if SessionImageCache.shared.full(for: id) != nil { continue }
