@@ -211,7 +211,6 @@ struct HTTPResponse: Sendable {
             status: status,
             headers: [
                 "Content-Type": contentType,
-                "Accept-Ranges": "bytes",
                 "Cache-Control": "no-store",
             ],
             body: data

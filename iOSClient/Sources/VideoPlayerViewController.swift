@@ -12,8 +12,11 @@ final class VideoPlayerViewController: UIViewController {
     private let closeButton = UIButton(type: .system)
     private let posterView = UIImageView()
     private let spinner = UIActivityIndicatorView(style: .large)
+    private let errorLabel = UILabel()
     private var player: AVPlayer?
+    private var localFileURL: URL?
     private var endObserver: NSObjectProtocol?
+    private var statusObservation: NSKeyValueObservation?
 
     init(client: PhotoStreamAPIClient, assetID: String, placeholder: UIImage?) {
         self.client = client
@@ -52,6 +55,14 @@ final class VideoPlayerViewController: UIViewController {
         spinner.startAnimating()
         view.addSubview(spinner)
 
+        errorLabel.textColor = UIColor(white: 0.85, alpha: 1)
+        errorLabel.font = .systemFont(ofSize: 15, weight: .medium)
+        errorLabel.textAlignment = .center
+        errorLabel.numberOfLines = 0
+        errorLabel.isHidden = true
+        errorLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(errorLabel)
+
         closeButton.setImage(
             UIImage(
                 systemName: "chevron.left",
@@ -86,6 +97,10 @@ final class VideoPlayerViewController: UIViewController {
             spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor),
 
+            errorLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 28),
+            errorLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -28),
+            errorLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+
             closeButton.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 14),
             closeButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
             closeButton.widthAnchor.constraint(equalToConstant: 36),
@@ -101,11 +116,7 @@ final class VideoPlayerViewController: UIViewController {
     }
 
     deinit {
-        if let endObserver {
-            NotificationCenter.default.removeObserver(endObserver)
-        }
-        player?.pause()
-        player = nil
+        cleanup()
     }
 
     @objc private func closeTapped() {
@@ -113,27 +124,73 @@ final class VideoPlayerViewController: UIViewController {
         dismiss(animated: true)
     }
 
-    private func startPlayback() async {
-        let playback = await client.videoPlayback(assetID: assetID)
-        let asset = AVURLAsset(url: playback.url, options: [
-            "AVURLAssetHTTPHeaderFieldsKey": playback.headers,
-        ])
-        let item = AVPlayerItem(asset: asset)
-        let player = AVPlayer(playerItem: item)
-        player.actionAtItemEnd = .pause
-        self.player = player
-        playerController.player = player
-        playerController.view.isHidden = false
-        posterView.isHidden = true
-        spinner.stopAnimating()
-        player.play()
-
-        endObserver = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime,
-            object: item,
-            queue: .main
-        ) { [weak player] _ in
-            player?.seek(to: .zero)
+    private func cleanup() {
+        statusObservation = nil
+        if let endObserver {
+            NotificationCenter.default.removeObserver(endObserver)
+            endObserver = nil
         }
+        player?.pause()
+        player = nil
+        if let localFileURL {
+            try? FileManager.default.removeItem(at: localFileURL)
+            self.localFileURL = nil
+        }
+    }
+
+    private func startPlayback() async {
+        do {
+            let fileURL = try await client.downloadVideo(assetID: assetID)
+            localFileURL = fileURL
+
+            let item = AVPlayerItem(url: fileURL)
+            let player = AVPlayer(playerItem: item)
+            player.actionAtItemEnd = .pause
+            self.player = player
+            playerController.player = player
+
+            statusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+                Task { @MainActor in
+                    self?.handleItemStatus(item.status, error: item.error)
+                }
+            }
+
+            endObserver = NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemDidPlayToEndTime,
+                object: item,
+                queue: .main
+            ) { [weak player] _ in
+                player?.seek(to: .zero)
+            }
+        } catch {
+            await MainActor.run {
+                showError(error.localizedDescription)
+            }
+        }
+    }
+
+    private func handleItemStatus(_ status: AVPlayerItem.Status, error: Error?) {
+        switch status {
+        case .readyToPlay:
+            spinner.stopAnimating()
+            errorLabel.isHidden = true
+            posterView.isHidden = true
+            playerController.view.isHidden = false
+            player?.play()
+        case .failed:
+            showError(error?.localizedDescription ?? "Could not play video")
+        case .unknown:
+            break
+        @unknown default:
+            break
+        }
+    }
+
+    private func showError(_ message: String) {
+        spinner.stopAnimating()
+        playerController.view.isHidden = true
+        posterView.isHidden = false
+        errorLabel.isHidden = false
+        errorLabel.text = message
     }
 }

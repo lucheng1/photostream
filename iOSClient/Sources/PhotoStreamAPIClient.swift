@@ -4,6 +4,7 @@ actor PhotoStreamAPIClient {
     private var baseURL: URL
     private var token: String?
     private let session: URLSession
+    private let videoSession: URLSession
 
     init(baseURL: URL, token: String? = nil) {
         self.baseURL = baseURL
@@ -15,6 +16,13 @@ actor PhotoStreamAPIClient {
         config.httpShouldUsePipelining = true
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         self.session = URLSession(configuration: config)
+
+        let videoConfig = URLSessionConfiguration.ephemeral
+        videoConfig.timeoutIntervalForRequest = 60
+        videoConfig.timeoutIntervalForResource = 600
+        videoConfig.httpMaximumConnectionsPerHost = 4
+        videoConfig.requestCachePolicy = .reloadIgnoringLocalCacheData
+        self.videoSession = URLSession(configuration: videoConfig)
     }
 
     func update(baseURL: URL, token: String?) {
@@ -84,15 +92,44 @@ actor PhotoStreamAPIClient {
         return try await get(url: url("v1", "assets", encoded, "full"))
     }
 
-    /// URL + auth headers for AVPlayer streaming of `/v1/assets/{id}/video`.
-    func videoPlayback(assetID: String) -> (url: URL, headers: [String: String]) {
+    /// Download video over authenticated URLSession to a local temp file for AVPlayer.
+    /// Direct AVPlayer HTTP streaming fails here: custom auth headers are unreliable and
+    /// our LAN server does not implement byte-range responses.
+    func downloadVideo(assetID: String) async throws -> URL {
         let encoded = AssetIDCoding.encode(assetID)
-        let videoURL = url("v1", "assets", encoded, "video")
-        var headers: [String: String] = [:]
-        if let token {
-            headers[PhotoStreamConstants.authHeader] = token
+        var request = URLRequest(url: url("v1", "assets", encoded, "video"))
+        request.timeoutInterval = 600
+        applyAuth(&request)
+
+        let (tempURL, response) = try await videoSession.download(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.status(0, "invalid response")
         }
-        return (videoURL, headers)
+        guard (200..<300).contains(http.statusCode) else {
+            let data = (try? Data(contentsOf: tempURL)) ?? Data()
+            try? FileManager.default.removeItem(at: tempURL)
+            let message = (try? JSONDecoder().decode(APIErrorBody.self, from: data))?.error
+                ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
+            throw APIError.status(http.statusCode, message)
+        }
+
+        let ext = Self.videoExtension(contentType: http.value(forHTTPHeaderField: "Content-Type"))
+        let dest = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ps-video-\(UUID().uuidString)")
+            .appendingPathExtension(ext)
+        if FileManager.default.fileExists(atPath: dest.path) {
+            try FileManager.default.removeItem(at: dest)
+        }
+        try FileManager.default.moveItem(at: tempURL, to: dest)
+        return dest
+    }
+
+    private static func videoExtension(contentType: String?) -> String {
+        let type = (contentType ?? "").lowercased()
+        if type.contains("quicktime") { return "mov" }
+        if type.contains("m4v") { return "m4v" }
+        if type.contains("webm") { return "webm" }
+        return "mp4"
     }
 
     private func thumbURL(assetID: String) -> URL {
