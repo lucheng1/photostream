@@ -1,12 +1,18 @@
 import UIKit
 
-/// Velocity-gated thumbnail loader: skips cells flicked past; settle-only fetch.
+/// Velocity-gated thumbnail loader with a bounded parallel worker pool.
 final class ThumbLoader: @unchecked Sendable {
     private let client: PhotoStreamAPIClient
     private let queue = DispatchQueue(label: "app.photostream.thumbloader")
     private var inflight: [String: Task<Void, Never>] = [:]
+    private var pendingOrder: [String] = []
+    private var pendingCallbacks: [String: @Sendable @MainActor (String, UIImage) -> Void] = [:]
     private var isFastScrolling = false
     private var settleWorkItem: DispatchWorkItem?
+    private var activeWorkers = 0
+
+    /// Parallel HTTP thumb fetches (kept under typical Wi‑Fi comfort).
+    private let maxWorkers = 12
 
     private var cellPixelSize: CGFloat = 200
     private var scale: Int = 3
@@ -18,7 +24,8 @@ final class ThumbLoader: @unchecked Sendable {
     func setCellMetrics(pixelSize: CGFloat, scale: Int) {
         queue.async {
             self.cellPixelSize = pixelSize
-            self.scale = scale
+            // Cap retina request size — @2x fills the cell visually with far less encode/transfer cost.
+            self.scale = min(max(scale, 1), 2)
         }
     }
 
@@ -40,7 +47,7 @@ final class ThumbLoader: @unchecked Sendable {
                 self?.loadVisible(ids: visibleIDs, onImage: onImage)
             }
             self.settleWorkItem = work
-            self.queue.asyncAfter(deadline: .now() + 0.07, execute: work)
+            self.queue.asyncAfter(deadline: .now() + 0.04, execute: work)
         }
     }
 
@@ -48,14 +55,28 @@ final class ThumbLoader: @unchecked Sendable {
         queue.async {
             guard !self.isFastScrolling else { return }
             let wanted = Set(ids)
+
+            // Drop workers / queue entries that scrolled away.
             for (id, task) in self.inflight where !wanted.contains(id) {
                 task.cancel()
                 self.inflight[id] = nil
             }
+            self.pendingOrder.removeAll { !wanted.contains($0) }
+            for id in self.pendingCallbacks.keys where !wanted.contains(id) {
+                self.pendingCallbacks[id] = nil
+            }
+
             for id in ids {
                 if SessionImageCache.shared.thumb(for: id) != nil { continue }
-                self.startLocked(id: id, onImage: onImage)
+                if self.inflight[id] != nil { continue }
+                if self.pendingCallbacks[id] != nil {
+                    self.pendingCallbacks[id] = onImage
+                    continue
+                }
+                self.pendingCallbacks[id] = onImage
+                self.pendingOrder.append(id)
             }
+            self.pumpLocked()
         }
     }
 
@@ -68,19 +89,33 @@ final class ThumbLoader: @unchecked Sendable {
             task.cancel()
         }
         inflight.removeAll()
+        pendingOrder.removeAll()
+        pendingCallbacks.removeAll()
+        activeWorkers = 0
+    }
+
+    private func pumpLocked() {
+        while activeWorkers < maxWorkers, !pendingOrder.isEmpty, !isFastScrolling {
+            let id = pendingOrder.removeFirst()
+            guard let onImage = pendingCallbacks.removeValue(forKey: id) else { continue }
+            if SessionImageCache.shared.thumb(for: id) != nil { continue }
+            if inflight[id] != nil { continue }
+            startLocked(id: id, onImage: onImage)
+        }
     }
 
     private func startLocked(id: String, onImage: @escaping @Sendable @MainActor (String, UIImage) -> Void) {
-        if inflight[id] != nil { return }
-
         let maxPixel = cellPixelSize
         let scale = self.scale
         let client = self.client
+        activeWorkers += 1
 
         let task = Task { [weak self] in
             defer {
                 self?.queue.async {
                     self?.inflight[id] = nil
+                    self?.activeWorkers = max(0, (self?.activeWorkers ?? 1) - 1)
+                    self?.pumpLocked()
                 }
             }
             do {

@@ -9,8 +9,10 @@ actor PhotoStreamAPIClient {
         self.baseURL = baseURL
         self.token = token
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 30
-        config.httpMaximumConnectionsPerHost = 6
+        config.timeoutIntervalForRequest = 20
+        config.timeoutIntervalForResource = 45
+        config.httpMaximumConnectionsPerHost = 12
+        config.httpShouldUsePipelining = true
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         self.session = URLSession(configuration: config)
     }

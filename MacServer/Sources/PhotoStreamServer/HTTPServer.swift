@@ -38,7 +38,7 @@ final class HTTPServer: @unchecked Sendable {
     }
 
     private func accept(_ connection: NWConnection) {
-        connection.start(queue: .global(qos: .userInitiated))
+        connection.start(queue: .global(qos: .userInteractive))
         receiveHeader(on: connection, buffer: Data())
     }
 

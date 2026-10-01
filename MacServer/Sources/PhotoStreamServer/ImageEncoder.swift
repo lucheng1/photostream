@@ -19,7 +19,7 @@ enum ImageEncoder {
             resizeMode: .fast
         )
         guard let cgImage = cgImage(from: image) else { throw ImageEncodeError.noData }
-        return try jpegData(from: cgImage, quality: 0.72, maxPixel: maxPixel)
+        return try jpegData(from: cgImage, quality: 0.62, maxPixel: maxPixel)
     }
 
     static func jpegFull(for asset: PHAsset) async throws -> Data {

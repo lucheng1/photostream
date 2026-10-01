@@ -98,14 +98,20 @@ final class AppRouter: @unchecked Sendable {
         }
         let w = Int(request.query["w"] ?? "200") ?? 200
         let h = Int(request.query["h"] ?? "200") ?? 200
-        let scale = Int(request.query["scale"] ?? "3") ?? 3
-        let maxPixel = max(w, h) * max(1, min(scale, 3))
+        let scale = Int(request.query["scale"] ?? "2") ?? 2
+        let maxPixel = max(w, h) * max(1, min(scale, 2))
+        let cacheKey = ThumbDiskCache.shared.key(assetID: id, maxPixel: maxPixel)
+
+        if let cached = ThumbDiskCache.shared.data(forKey: cacheKey) {
+            return .jpeg(cached)
+        }
 
         guard let asset = await MainActor.run(body: { library.asset(id: id) }) else {
             return .json(APIErrorBody(error: "not found"), status: 404)
         }
         do {
             let data = try await ImageEncoder.jpegThumbnail(for: asset, maxPixel: maxPixel)
+            ThumbDiskCache.shared.store(data, forKey: cacheKey)
             return .jpeg(data)
         } catch {
             return .json(APIErrorBody(error: error.localizedDescription), status: 500)
