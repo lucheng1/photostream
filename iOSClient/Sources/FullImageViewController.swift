@@ -66,9 +66,16 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate, UIG
         pager.addSubview(adjacentScroll)
         pager.addSubview(currentScroll)
 
-        closeButton.setTitle("Close", for: .normal)
-        closeButton.setTitleColor(.white, for: .normal)
-        closeButton.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
+        closeButton.setImage(UIImage(systemName: "chevron.left", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold)), for: .normal)
+        closeButton.tintColor = UIColor(white: 0.15, alpha: 1)
+        closeButton.backgroundColor = UIColor(white: 0.94, alpha: 0.95)
+        closeButton.layer.cornerRadius = 18
+        closeButton.clipsToBounds = false
+        closeButton.layer.shadowColor = UIColor.black.cgColor
+        closeButton.layer.shadowOpacity = 0.18
+        closeButton.layer.shadowOffset = CGSize(width: 0, height: 1)
+        closeButton.layer.shadowRadius = 2
+        closeButton.accessibilityLabel = "Back"
         closeButton.addTarget(self, action: #selector(close), for: .touchUpInside)
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(closeButton)
@@ -91,8 +98,10 @@ final class FullImageViewController: UIViewController, UIScrollViewDelegate, UIG
             pager.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             pager.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             pager.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            closeButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            closeButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            closeButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
+            closeButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
+            closeButton.widthAnchor.constraint(equalToConstant: 36),
+            closeButton.heightAnchor.constraint(equalToConstant: 36),
             spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor),
         ])
