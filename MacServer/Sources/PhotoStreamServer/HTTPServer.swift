@@ -43,6 +43,10 @@ final class HTTPServer: @unchecked Sendable {
     }
 
     private func receiveHeader(on connection: NWConnection, buffer: Data) {
+        if let range = buffer.range(of: Data("\r\n\r\n".utf8)) {
+            handleHeaderBuffer(buffer, headerEnd: range, on: connection)
+            return
+        }
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             if let error {
@@ -54,24 +58,7 @@ final class HTTPServer: @unchecked Sendable {
             if let data { buf.append(data) }
 
             if let range = buf.range(of: Data("\r\n\r\n".utf8)) {
-                let headerData = buf.subdata(in: buf.startIndex..<range.lowerBound)
-                let remainder = buf.subdata(in: range.upperBound..<buf.endIndex)
-                guard let headerText = String(data: headerData, encoding: .utf8),
-                      let request = HTTPRequest.parse(headerText: headerText, body: remainder)
-                else {
-                    self.respond(HTTPResponse(status: 400, body: Data("bad request".utf8)), on: connection)
-                    return
-                }
-
-                if let length = request.contentLength, remainder.count < length {
-                    self.receiveBody(on: connection, request: request, body: remainder, expected: length)
-                    return
-                }
-
-                Task {
-                    let response = await self.handler(request)
-                    self.respond(response, on: connection)
-                }
+                self.handleHeaderBuffer(buf, headerEnd: range, on: connection)
                 return
             }
 
@@ -80,15 +67,69 @@ final class HTTPServer: @unchecked Sendable {
                 return
             }
             if buf.count > 1024 * 1024 {
-                self.respond(HTTPResponse(status: 413, body: Data("too large".utf8)), on: connection)
+                self.finish(
+                    HTTPResponse(status: 413, body: Data("too large".utf8)),
+                    on: connection,
+                    keepAlive: false,
+                    leftover: Data()
+                )
                 return
             }
             self.receiveHeader(on: connection, buffer: buf)
         }
     }
 
-    private func receiveBody(on connection: NWConnection, request: HTTPRequest, body: Data, expected: Int) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: expected - body.count) { [weak self] data, _, isComplete, error in
+    private func handleHeaderBuffer(
+        _ buf: Data,
+        headerEnd range: Range<Data.Index>,
+        on connection: NWConnection
+    ) {
+        let headerData = buf.subdata(in: buf.startIndex..<range.lowerBound)
+        let remainder = buf.subdata(in: range.upperBound..<buf.endIndex)
+        guard let headerText = String(data: headerData, encoding: .utf8),
+              var request = HTTPRequest.parse(headerText: headerText, body: Data())
+        else {
+            finish(
+                HTTPResponse(status: 400, body: Data("bad request".utf8)),
+                on: connection,
+                keepAlive: false,
+                leftover: Data()
+            )
+            return
+        }
+
+        let contentLength = request.contentLength ?? 0
+        if contentLength > 0 {
+            if remainder.count < contentLength {
+                receiveBody(
+                    on: connection,
+                    request: request,
+                    body: remainder,
+                    expected: contentLength,
+                    keepAliveHint: request.wantsKeepAlive
+                )
+                return
+            }
+            request.body = remainder.prefix(contentLength)
+            let leftover = remainder.count > contentLength
+                ? Data(remainder.dropFirst(contentLength))
+                : Data()
+            dispatch(request, on: connection, leftover: leftover)
+            return
+        }
+
+        // No body (typical GET/HEAD). Remainder is the start of the next pipelined request.
+        dispatch(request, on: connection, leftover: remainder)
+    }
+
+    private func receiveBody(
+        on connection: NWConnection,
+        request: HTTPRequest,
+        body: Data,
+        expected: Int,
+        keepAliveHint: Bool
+    ) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: max(1, expected - body.count)) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             if error != nil {
                 connection.cancel()
@@ -99,20 +140,45 @@ final class HTTPServer: @unchecked Sendable {
             if buf.count >= expected || isComplete {
                 var full = request
                 full.body = buf.prefix(expected)
-                Task {
-                    let response = await self.handler(full)
-                    self.respond(response, on: connection)
-                }
+                let leftover = buf.count > expected ? Data(buf.dropFirst(expected)) : Data()
+                self.dispatch(full, on: connection, leftover: leftover)
                 return
             }
-            self.receiveBody(on: connection, request: request, body: buf, expected: expected)
+            self.receiveBody(
+                on: connection,
+                request: request,
+                body: buf,
+                expected: expected,
+                keepAliveHint: keepAliveHint
+            )
         }
     }
 
-    private func respond(_ response: HTTPResponse, on connection: NWConnection) {
-        connection.send(content: response.serialize(), completion: .contentProcessed { _ in
-            connection.cancel()
-        })
+    private func dispatch(_ request: HTTPRequest, on connection: NWConnection, leftover: Data) {
+        Task {
+            let response = await self.handler(request)
+            let keepAlive = request.wantsKeepAlive
+            self.finish(response, on: connection, keepAlive: keepAlive, leftover: leftover)
+        }
+    }
+
+    private func finish(
+        _ response: HTTPResponse,
+        on connection: NWConnection,
+        keepAlive: Bool,
+        leftover: Data
+    ) {
+        connection.send(
+            content: response.serialize(keepAlive: keepAlive),
+            completion: .contentProcessed { [weak self] _ in
+                guard let self else { return }
+                if keepAlive {
+                    self.receiveHeader(on: connection, buffer: leftover)
+                } else {
+                    connection.cancel()
+                }
+            }
+        )
     }
 }
 
@@ -135,6 +201,12 @@ struct HTTPRequest: Sendable {
 
     var rangeHeader: String? {
         headers["range"]
+    }
+
+    /// HTTP/1.1 defaults to keep-alive unless the client asks to close.
+    var wantsKeepAlive: Bool {
+        let value = headers["connection"]?.lowercased() ?? "keep-alive"
+        return !value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.contains("close")
     }
 
     static func parse(headerText: String, body: Data) -> HTTPRequest? {
@@ -223,7 +295,7 @@ struct HTTPResponse: Sendable {
         )
     }
 
-    func serialize() -> Data {
+    func serialize(keepAlive: Bool = false) -> Data {
         let reason: String
         switch status {
         case 200: reason = "OK"
@@ -240,7 +312,12 @@ struct HTTPResponse: Sendable {
         if headerMap["Content-Length"] == nil {
             headerMap["Content-Length"] = String(body.count)
         }
-        headerMap["Connection"] = "close"
+        if keepAlive {
+            headerMap["Connection"] = "keep-alive"
+            headerMap["Keep-Alive"] = "timeout=60, max=1000"
+        } else {
+            headerMap["Connection"] = "close"
+        }
         var text = "HTTP/1.1 \(status) \(reason)\r\n"
         for (k, v) in headerMap {
             text += "\(k): \(v)\r\n"

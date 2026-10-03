@@ -135,11 +135,13 @@ final class VideoPlayerViewController: UIViewController {
 
     private func startPlayback() async {
         let streamURL = await client.streamingVideoURL(assetID: assetID)
-        // Prefer resource loader–friendly asset options for progressive HTTP.
-        let asset = AVURLAsset(url: streamURL)
+        let asset = AVURLAsset(url: streamURL, options: [
+            // Prefer larger network reads — fewer round-trips over Tailscale / cellular.
+            AVURLAssetAllowsCellularAccessKey: true,
+        ])
         let item = AVPlayerItem(asset: asset)
-        // Start sooner with a smaller buffer for LAN.
-        item.preferredForwardBufferDuration = 2
+        // Larger forward buffer reduces stall/rebuffer loops on high-latency links.
+        item.preferredForwardBufferDuration = 15
 
         let player = AVPlayer(playerItem: item)
         player.automaticallyWaitsToMinimizeStalling = true
