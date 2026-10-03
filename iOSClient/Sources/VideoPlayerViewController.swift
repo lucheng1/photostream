@@ -151,6 +151,8 @@ final class VideoPlayerViewController: UIViewController {
 
     private func startPlayback() async {
         statusLabel.isHidden = false
+        activatePlaybackAudioSession()
+
         let network = await NetworkQuality.current()
         if network == .mobile {
             statusLabel.text = "Preparing mobile stream…"
@@ -163,7 +165,7 @@ final class VideoPlayerViewController: UIViewController {
             AVURLAssetAllowsCellularAccessKey: true,
         ])
         let item = AVPlayerItem(asset: asset)
-        // Shorter buffer target on mobile proxy (~5.5 Mbps); a bit more on Wi‑Fi 4K.
+        // Shorter buffer target on mobile proxy; a bit more on Wi‑Fi 4K.
         item.preferredForwardBufferDuration = network == .mobile ? 4 : 8
         // Soft cap only for the mobile proxy — never on original 4K (would stall).
         if network == .mobile {
@@ -173,6 +175,8 @@ final class VideoPlayerViewController: UIViewController {
         let player = AVPlayer(playerItem: item)
         player.automaticallyWaitsToMinimizeStalling = true
         player.actionAtItemEnd = .none
+        player.isMuted = false
+        player.volume = 1
         self.player = player
         playerController.player = player
 
@@ -245,5 +249,15 @@ final class VideoPlayerViewController: UIViewController {
         posterView.isHidden = false
         errorLabel.isHidden = false
         errorLabel.text = message
+    }
+
+    private func activatePlaybackAudioSession() {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .moviePlayback, options: [])
+            try session.setActive(true, options: [])
+        } catch {
+            // Playback may still work with the system default session.
+        }
     }
 }

@@ -12,7 +12,7 @@ enum VideoMobileProxy {
     /// ~2.5 Mbps video — lean 1080p HEVC for 5G / Tailscale.
     static let targetVideoBitRate = 2_500_000
     static let maxEdge = 1920
-    static let audioBitRate = 96_000
+    static let audioBitRate = 128_000
 
     private static let jobs = MobileProxyJobs()
 
@@ -69,9 +69,13 @@ enum VideoMobileProxy {
         defer { try? FileManager.default.removeItem(at: tmp) }
 
         let vf = "scale='min(\(maxEdge),iw)':'-2':force_original_aspect_ratio=decrease"
+        // Map the first AAC/stereo track explicitly — iPhone MOVs also carry APAC
+        // spatial audio that some players won't use over progressive HTTP.
         let hevcArgs = [
             "-y", "-hide_banner", "-loglevel", "error",
             "-i", source.path,
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
             "-vf", vf,
             "-c:v", "hevc_videotoolbox",
             "-b:v", "\(targetVideoBitRate)",
@@ -81,6 +85,7 @@ enum VideoMobileProxy {
             "-c:a", "aac",
             "-b:a", "\(audioBitRate)",
             "-ac", "2",
+            "-ar", "48000",
             "-movflags", "+faststart",
             tmp.path,
         ]
@@ -90,6 +95,8 @@ enum VideoMobileProxy {
             let h264Args = [
                 "-y", "-hide_banner", "-loglevel", "error",
                 "-i", source.path,
+                "-map", "0:v:0",
+                "-map", "0:a:0?",
                 "-vf", "\(vf),format=yuv420p",
                 "-c:v", "h264_videotoolbox",
                 "-b:v", "3000000",
@@ -98,6 +105,7 @@ enum VideoMobileProxy {
                 "-c:a", "aac",
                 "-b:a", "\(audioBitRate)",
                 "-ac", "2",
+                "-ar", "48000",
                 "-movflags", "+faststart",
                 tmp.path,
             ]
