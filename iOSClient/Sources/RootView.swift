@@ -194,9 +194,20 @@ struct PairingView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                Section {
+                    Text(Self.appVersionLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
             .navigationTitle("PhotoStream")
         }
+    }
+
+    private static var appVersionLabel: String {
+        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        return "v\(v) (\(b))"
     }
 }
 

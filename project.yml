@@ -29,6 +29,8 @@ targets:
       properties:
         CFBundleDisplayName: PhotoStream
         CFBundleIconName: AppIcon
+        CFBundleShortVersionString: "1.0.1"
+        CFBundleVersion: "3"
         UILaunchScreen: {}
         NSLocalNetworkUsageDescription: PhotoStream finds your Mac Photos server on the local network.
         NSBonjourServices:
