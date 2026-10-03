@@ -9,13 +9,32 @@ final class PhotoLibraryService {
 
     var count: Int { assets.count }
 
-    func requestAuthorization() async -> Bool {
+    func requestAuthorization(timeoutSeconds: Double = 45) async -> Bool {
         let current = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         if current == .authorized || current == .limited {
             return true
         }
-        let status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
-        return status == .authorized || status == .limited
+        if current == .denied || current == .restricted {
+            return false
+        }
+
+        // Fire-and-forget the system prompt. Awaiting the async Photos API can hang
+        // forever for ad-hoc menu-bar apps after a re-sign (TCC sheet never completes).
+        PHPhotoLibrary.requestAuthorization(for: .readWrite) { _ in }
+
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+            if status == .authorized || status == .limited {
+                return true
+            }
+            if status == .denied || status == .restricted {
+                return false
+            }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        let final = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        return final == .authorized || final == .limited
     }
 
     func reload() {

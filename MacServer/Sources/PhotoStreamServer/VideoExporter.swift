@@ -29,7 +29,8 @@ enum VideoExporter {
         }
 
         if let direct = try await requestDirectFileURL(for: asset) {
-            return (direct, mimeType(forExtension: direct.pathExtension.lowercased()))
+            let streamable = try await prepareForStreaming(sourceURL: direct)
+            return (streamable, mimeType(forExtension: streamable.pathExtension.lowercased()))
         }
 
         let resources = PHAssetResource.assetResources(for: asset)
@@ -60,7 +61,60 @@ enum VideoExporter {
         }
 
         await cache.set(out, for: asset.localIdentifier)
-        return (out, mimeType(forExtension: ext))
+        let streamable = try await prepareForStreaming(sourceURL: out)
+        return (streamable, mimeType(forExtension: streamable.pathExtension.lowercased()))
+    }
+
+    /// Ensure `moov` is near the start so HTTP progressive playback can begin
+    /// without reading the whole file (iPhone camera MOVs keep moov at the end).
+    static func prepareForStreaming(sourceURL: URL) async throws -> URL {
+        if moovIsNearStart(sourceURL) { return sourceURL }
+
+        let attrs = try FileManager.default.attributesOfItem(atPath: sourceURL.path)
+        let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+        let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let key = "\(sourceURL.path)|\(size)|\(mtime)"
+        let digest = AssetIDCoding.encode(key)
+        let ext = sourceURL.pathExtension.isEmpty ? "mov" : sourceURL.pathExtension.lowercased()
+        let out = cacheDirectory
+            .appendingPathComponent("faststart-\(digest)")
+            .appendingPathExtension(ext)
+
+        if FileManager.default.fileExists(atPath: out.path) {
+            return out
+        }
+
+        let asset = AVURLAsset(url: sourceURL)
+        guard let session = AVAssetExportSession(
+            asset: asset,
+            presetName: AVAssetExportPresetPassthrough
+        ) else {
+            return sourceURL
+        }
+
+        let fileType: AVFileType = (ext == "mp4" || ext == "m4v") ? .mp4 : .mov
+        session.outputURL = out
+        session.outputFileType = fileType
+        session.shouldOptimizeForNetworkUse = true
+
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            session.exportAsynchronously {
+                continuation.resume()
+            }
+        }
+
+        if session.status == .completed, FileManager.default.fileExists(atPath: out.path) {
+            return out
+        }
+        try? FileManager.default.removeItem(at: out)
+        return sourceURL
+    }
+
+    private static func moovIsNearStart(_ url: URL, probeBytes: Int = 512 * 1024) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        let data = (try? handle.read(upToCount: probeBytes)) ?? Data()
+        return data.range(of: Data("moov".utf8)) != nil
     }
 
     private static func requestDirectFileURL(for phAsset: PHAsset) async throws -> URL? {
@@ -159,11 +213,9 @@ enum ByteRange {
 }
 
 enum VideoHTTP {
-    /// Max bytes per ranged 206 response. Open-ended `bytes=0-` would otherwise try
-    /// to push an entire 4K movie in one reply, which stalls over Tailscale.
-    private static let maxChunkBytes = 4 * 1024 * 1024
-
     /// Build a 200/206 response backed by a file region (streamed by HTTPServer).
+    /// Honor the exact byte range AVPlayer asked for — truncating open-ended
+    /// `bytes=0-` breaks iPhone MOVs that keep `moov` at the end of the file.
     static func response(
         fileURL: URL,
         contentType: String,
@@ -231,14 +283,12 @@ enum VideoHTTP {
                 end = e
             }
 
-            // Cap only when the client asked for a range (keeps Tailscale healthy).
-            let cappedEnd = min(end, start + maxChunkBytes - 1)
-            let length = cappedEnd - start + 1
+            let length = end - start + 1
 
             var headers: [String: String] = [
                 "Content-Type": contentType,
                 "Accept-Ranges": "bytes",
-                "Content-Range": "bytes \(start)-\(cappedEnd)/\(size)",
+                "Content-Range": "bytes \(start)-\(end)/\(size)",
                 "Cache-Control": "private, max-age=3600",
             ]
 

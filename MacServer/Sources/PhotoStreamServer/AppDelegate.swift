@@ -110,27 +110,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startServer() async {
-        let authorized = await library.requestAuthorization()
-        let hasFolder = folder.isConfigured
-
-        if !authorized && !hasFolder {
-            pin = "DENIED"
-            rebuildMenu()
-            showAlert(
-                title: "Photos Access Required",
-                message: "Grant Photos access in System Settings → Privacy & Security → Photos, or choose a folder from the menu bar, then reopen PhotoStream."
-            )
-            return
-        }
-
-        if authorized {
-            library.reload()
-        }
-
-        // Rescan folder every launch; never reuse a previous folder index.
-        if hasFolder {
-            await folder.reload()
-        }
+        // Bring the accessory app forward so the Photos TCC sheet can appear.
+        // Ad-hoc re-signs change the CDHash, so macOS often asks again every rebuild.
+        NSApp.activate(ignoringOtherApps: true)
 
         pin = await auth.currentPIN()
         rebuildMenu()
@@ -153,11 +135,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let advertiser = BonjourAdvertiser(name: host, port: Int(port))
             advertiser.start()
             bonjour = advertiser
-            print(
-                "PhotoStream listening on \(port), photos=\(library.count), folder=\(folder.count), PIN=\(pin) (folder \(pin)9)"
-            )
+            print("PhotoStream listening on \(port), PIN=\(pin) (folder \(pin)9)")
         } catch {
             showAlert(title: "Server failed", message: error.localizedDescription)
+            return
+        }
+
+        // Load libraries after the port is open so a hung Photos prompt can't
+        // block pairing / remote access entirely.
+        await loadLibraries()
+    }
+
+    private func loadLibraries() async {
+        let statusBefore = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        Self.appendLog("photos status before auth: \(statusBefore.rawValue)")
+        let authorized = await library.requestAuthorization(timeoutSeconds: 20)
+        let statusAfter = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        Self.appendLog(
+            "photos authorized=\(authorized) statusAfter=\(statusAfter.rawValue)"
+        )
+        let hasFolder = folder.isConfigured
+
+        // Always attempt a Photos fetch. On some macOS builds, ad-hoc apps show
+        // Photos toggled on in Settings while authorizationStatus stays `.notDetermined`;
+        // the fetch still succeeds once TCC has the CDHash.
+        library.reload()
+        if hasFolder {
+            await folder.reload()
+        }
+        rebuildMenu()
+        Self.appendLog(
+            "sources ready: photos=\(library.count), folder=\(folder.count) authorized=\(authorized)"
+        )
+        print(
+            "PhotoStream sources ready: photos=\(library.count), folder=\(folder.count)"
+        )
+
+        if library.count == 0 && !hasFolder {
+            showAlert(
+                title: "Photos Access Required",
+                message: "Grant Photos access in System Settings → Privacy & Security → Photos (enable PhotoStream), or choose a folder from the menu bar. After a server rebuild you may need to toggle PhotoStream off/on."
+            )
+        }
+    }
+
+    private static func appendLog(_ line: String) {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("PhotoStream", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("server.log")
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let text = "\(stamp) \(line)\n"
+        if let data = text.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: url.path),
+               let handle = try? FileHandle(forWritingTo: url) {
+                defer { try? handle.close() }
+                try? handle.seekToEnd()
+                try? handle.write(contentsOf: data)
+            } else {
+                try? data.write(to: url)
+            }
         }
     }
 

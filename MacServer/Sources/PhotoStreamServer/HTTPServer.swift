@@ -237,8 +237,9 @@ final class HTTPServer: @unchecked Sendable {
                 defer { try? handle.close() }
                 try handle.seek(toOffset: UInt64(fileOffset + offset))
                 let slice = try handle.read(upToCount: toRead) ?? Data()
+                // Short read before Content-Length is satisfied would desync keep-alive.
                 if slice.isEmpty {
-                    doneSending(on: connection, keepAlive: keepAlive, leftover: leftover)
+                    connection.cancel()
                     return
                 }
                 connection.send(content: slice, completion: .contentProcessed { [weak self] error in

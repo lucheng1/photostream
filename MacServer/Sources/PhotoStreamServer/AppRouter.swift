@@ -252,13 +252,20 @@ final class AppRouter: @unchecked Sendable {
             guard asset.mediaType == .video else {
                 return .json(APIErrorBody(error: "not a video"), status: 400)
             }
-            let contentType = VideoExporter.mimeType(forExtension: asset.fileURL.pathExtension.lowercased())
-            return VideoHTTP.response(
-                fileURL: asset.fileURL,
-                contentType: contentType,
-                rangeHeader: request.rangeHeader,
-                includeBody: includeBody
-            )
+            do {
+                let fileURL = try await VideoExporter.prepareForStreaming(sourceURL: asset.fileURL)
+                let contentType = VideoExporter.mimeType(
+                    forExtension: fileURL.pathExtension.lowercased()
+                )
+                return VideoHTTP.response(
+                    fileURL: fileURL,
+                    contentType: contentType,
+                    rangeHeader: request.rangeHeader,
+                    includeBody: includeBody
+                )
+            } catch {
+                return .json(APIErrorBody(error: error.localizedDescription), status: 500)
+            }
         }
     }
 }

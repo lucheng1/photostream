@@ -9,8 +9,9 @@ actor PhotoStreamAPIClient {
         self.baseURL = baseURL
         self.token = token
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 20
-        config.timeoutIntervalForResource = 45
+        config.timeoutIntervalForRequest = 30
+        // Videos over Tailscale can take minutes; thumbs still finish quickly.
+        config.timeoutIntervalForResource = 600
         config.httpMaximumConnectionsPerHost = 20
         config.httpShouldUsePipelining = true
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -95,6 +96,31 @@ actor PhotoStreamAPIClient {
         }
         components.queryItems = items.isEmpty ? nil : items
         return components.url!
+    }
+
+    /// Download the full video to a local cache file (reliable over Tailscale).
+    func downloadVideo(assetID: String) async throws -> URL {
+        let encoded = AssetIDCoding.encode(assetID)
+        let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("PhotoStreamVideos", isDirectory: true)
+        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        let dest = cacheDir.appendingPathComponent(encoded).appendingPathExtension("mov")
+        if FileManager.default.fileExists(atPath: dest.path) {
+            return dest
+        }
+
+        var request = URLRequest(url: url("v1", "assets", encoded, "video"))
+        applyAuth(&request)
+        request.timeoutInterval = 600
+
+        let (tempURL, response) = try await session.download(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            let data = (try? Data(contentsOf: tempURL)) ?? Data()
+            try Self.throwIfNeeded(response: response, data: data)
+        }
+        try? FileManager.default.removeItem(at: dest)
+        try FileManager.default.moveItem(at: tempURL, to: dest)
+        return dest
     }
 
     private func thumbURL(assetID: String) -> URL {

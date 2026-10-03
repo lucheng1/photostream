@@ -2,7 +2,8 @@ import AVFoundation
 import AVKit
 import UIKit
 
-/// Full-screen progressive video playback (Google Photos / Amazon Photos style).
+/// Full-screen video playback. Downloads to a local cache then plays — progressive
+/// HTTP streaming of 4K camera MOVs stalls/fails over Tailscale.
 final class VideoPlayerViewController: UIViewController {
     private let client: PhotoStreamAPIClient
     private let assetID: String
@@ -12,10 +13,12 @@ final class VideoPlayerViewController: UIViewController {
     private let closeButton = UIButton(type: .system)
     private let posterView = UIImageView()
     private let spinner = UIActivityIndicatorView(style: .large)
+    private let statusLabel = UILabel()
     private let errorLabel = UILabel()
     private var player: AVPlayer?
     private var endObserver: NSObjectProtocol?
     private var statusObservation: NSKeyValueObservation?
+    private var localFileURL: URL?
 
     init(client: PhotoStreamAPIClient, assetID: String, placeholder: UIImage?) {
         self.client = client
@@ -53,6 +56,13 @@ final class VideoPlayerViewController: UIViewController {
         spinner.translatesAutoresizingMaskIntoConstraints = false
         spinner.startAnimating()
         view.addSubview(spinner)
+
+        statusLabel.textColor = UIColor(white: 0.9, alpha: 1)
+        statusLabel.font = .systemFont(ofSize: 14, weight: .medium)
+        statusLabel.textAlignment = .center
+        statusLabel.text = "Loading video…"
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(statusLabel)
 
         errorLabel.textColor = UIColor(white: 0.85, alpha: 1)
         errorLabel.font = .systemFont(ofSize: 15, weight: .medium)
@@ -94,7 +104,11 @@ final class VideoPlayerViewController: UIViewController {
             playerController.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
             spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -12),
+
+            statusLabel.topAnchor.constraint(equalTo: spinner.bottomAnchor, constant: 14),
+            statusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 28),
+            statusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -28),
 
             errorLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 28),
             errorLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -28),
@@ -134,17 +148,20 @@ final class VideoPlayerViewController: UIViewController {
     }
 
     private func startPlayback() async {
-        let streamURL = await client.streamingVideoURL(assetID: assetID)
-        let asset = AVURLAsset(url: streamURL, options: [
-            // Prefer larger network reads — fewer round-trips over Tailscale / cellular.
-            AVURLAssetAllowsCellularAccessKey: true,
-        ])
-        let item = AVPlayerItem(asset: asset)
-        // Larger forward buffer reduces stall/rebuffer loops on high-latency links.
-        item.preferredForwardBufferDuration = 30
-        // Soft-cap bitrate so Tailscale/cellular can keep up with 4K HEVC when possible.
-        item.preferredPeakBitRate = 8_000_000
+        do {
+            statusLabel.text = "Loading video…"
+            let localURL = try await client.downloadVideo(assetID: assetID)
+            localFileURL = localURL
+            guard !Task.isCancelled else { return }
+            play(fileURL: localURL)
+        } catch {
+            showError(error.localizedDescription)
+        }
+    }
 
+    private func play(fileURL: URL) {
+        statusLabel.isHidden = true
+        let item = AVPlayerItem(url: fileURL)
         let player = AVPlayer(playerItem: item)
         player.automaticallyWaitsToMinimizeStalling = true
         player.actionAtItemEnd = .pause
@@ -170,12 +187,19 @@ final class VideoPlayerViewController: UIViewController {
         switch status {
         case .readyToPlay:
             spinner.stopAnimating()
+            statusLabel.isHidden = true
             errorLabel.isHidden = true
             posterView.isHidden = true
             playerController.view.isHidden = false
             player?.play()
         case .failed:
-            let detail = error?.localizedDescription ?? "Could not play video"
+            let ns = error as NSError?
+            let detail: String
+            if let ns {
+                detail = "\(ns.localizedDescription) (\(ns.domain) \(ns.code))"
+            } else {
+                detail = "Could not play video"
+            }
             showError(detail)
         case .unknown:
             break
@@ -186,6 +210,7 @@ final class VideoPlayerViewController: UIViewController {
 
     private func showError(_ message: String) {
         spinner.stopAnimating()
+        statusLabel.isHidden = true
         playerController.view.isHidden = true
         posterView.isHidden = false
         errorLabel.isHidden = false
