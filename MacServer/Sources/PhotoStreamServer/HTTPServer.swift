@@ -6,6 +6,7 @@ final class HTTPServer: @unchecked Sendable {
     private let port: NWEndpoint.Port
     private var listener: NWListener?
     private let handler: @Sendable (HTTPRequest) async -> HTTPResponse
+    private let sendQueue = DispatchQueue(label: "app.photostream.httpsend", qos: .userInteractive)
 
     init(port: UInt16, handler: @escaping @Sendable (HTTPRequest) async -> HTTPResponse) {
         self.port = NWEndpoint.Port(rawValue: port)!
@@ -15,6 +16,12 @@ final class HTTPServer: @unchecked Sendable {
     func start() throws {
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
+        // Larger TCP buffers help video streaming over high-latency links (Tailscale).
+        if let tcp = parameters.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
+            tcp.connectionTimeout = 30
+            tcp.enableKeepalive = true
+            tcp.keepaliveIdle = 5
+        }
         let listener = try NWListener(using: parameters, on: port)
         self.listener = listener
 
@@ -68,7 +75,7 @@ final class HTTPServer: @unchecked Sendable {
             }
             if buf.count > 1024 * 1024 {
                 self.finish(
-                    HTTPResponse(status: 413, body: Data("too large".utf8)),
+                    HTTPResponse(status: 413, body: .data(Data("too large".utf8))),
                     on: connection,
                     keepAlive: false,
                     leftover: Data()
@@ -90,7 +97,7 @@ final class HTTPServer: @unchecked Sendable {
               var request = HTTPRequest.parse(headerText: headerText, body: Data())
         else {
             finish(
-                HTTPResponse(status: 400, body: Data("bad request".utf8)),
+                HTTPResponse(status: 400, body: .data(Data("bad request".utf8))),
                 on: connection,
                 keepAlive: false,
                 leftover: Data()
@@ -105,8 +112,7 @@ final class HTTPServer: @unchecked Sendable {
                     on: connection,
                     request: request,
                     body: remainder,
-                    expected: contentLength,
-                    keepAliveHint: request.wantsKeepAlive
+                    expected: contentLength
                 )
                 return
             }
@@ -118,7 +124,6 @@ final class HTTPServer: @unchecked Sendable {
             return
         }
 
-        // No body (typical GET/HEAD). Remainder is the start of the next pipelined request.
         dispatch(request, on: connection, leftover: remainder)
     }
 
@@ -126,8 +131,7 @@ final class HTTPServer: @unchecked Sendable {
         on connection: NWConnection,
         request: HTTPRequest,
         body: Data,
-        expected: Int,
-        keepAliveHint: Bool
+        expected: Int
     ) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: max(1, expected - body.count)) { [weak self] data, _, isComplete, error in
             guard let self else { return }
@@ -144,13 +148,7 @@ final class HTTPServer: @unchecked Sendable {
                 self.dispatch(full, on: connection, leftover: leftover)
                 return
             }
-            self.receiveBody(
-                on: connection,
-                request: request,
-                body: buf,
-                expected: expected,
-                keepAliveHint: keepAliveHint
-            )
+            self.receiveBody(on: connection, request: request, body: buf, expected: expected)
         }
     }
 
@@ -168,17 +166,119 @@ final class HTTPServer: @unchecked Sendable {
         keepAlive: Bool,
         leftover: Data
     ) {
-        connection.send(
-            content: response.serialize(keepAlive: keepAlive),
-            completion: .contentProcessed { [weak self] _ in
-                guard let self else { return }
-                if keepAlive {
-                    self.receiveHeader(on: connection, buffer: leftover)
-                } else {
-                    connection.cancel()
-                }
+        let headerData = response.serializeHeaders(keepAlive: keepAlive)
+        sendQueue.async { [weak self] in
+            self?.sendHeaderThenBody(
+                headerData,
+                body: response.body,
+                on: connection,
+                keepAlive: keepAlive,
+                leftover: leftover
+            )
+        }
+    }
+
+    private func sendHeaderThenBody(
+        _ headerData: Data,
+        body: HTTPBody,
+        on connection: NWConnection,
+        keepAlive: Bool,
+        leftover: Data
+    ) {
+        connection.send(content: headerData, completion: .contentProcessed { [weak self] error in
+            guard let self else { return }
+            if error != nil {
+                connection.cancel()
+                return
             }
-        )
+            self.sendBody(
+                body,
+                on: connection,
+                offset: 0,
+                keepAlive: keepAlive,
+                leftover: leftover
+            )
+        })
+    }
+
+    private func sendBody(
+        _ body: HTTPBody,
+        on connection: NWConnection,
+        offset: Int,
+        keepAlive: Bool,
+        leftover: Data
+    ) {
+        let chunkSize = 256 * 1024
+        switch body {
+        case .data(let data):
+            if offset >= data.count {
+                doneSending(on: connection, keepAlive: keepAlive, leftover: leftover)
+                return
+            }
+            let end = min(data.count, offset + chunkSize)
+            let slice = data.subdata(in: offset..<end)
+            connection.send(content: slice, completion: .contentProcessed { [weak self] error in
+                guard let self else { return }
+                if error != nil {
+                    connection.cancel()
+                    return
+                }
+                self.sendBody(.data(data), on: connection, offset: end, keepAlive: keepAlive, leftover: leftover)
+            })
+
+        case .file(let url, let fileOffset, let length):
+            if offset >= length {
+                doneSending(on: connection, keepAlive: keepAlive, leftover: leftover)
+                return
+            }
+            let toRead = min(chunkSize, length - offset)
+            do {
+                let handle = try FileHandle(forReadingFrom: url)
+                defer { try? handle.close() }
+                try handle.seek(toOffset: UInt64(fileOffset + offset))
+                let slice = try handle.read(upToCount: toRead) ?? Data()
+                if slice.isEmpty {
+                    doneSending(on: connection, keepAlive: keepAlive, leftover: leftover)
+                    return
+                }
+                connection.send(content: slice, completion: .contentProcessed { [weak self] error in
+                    guard let self else { return }
+                    if error != nil {
+                        connection.cancel()
+                        return
+                    }
+                    self.sendBody(
+                        .file(url: url, offset: fileOffset, length: length),
+                        on: connection,
+                        offset: offset + slice.count,
+                        keepAlive: keepAlive,
+                        leftover: leftover
+                    )
+                })
+            } catch {
+                connection.cancel()
+            }
+        }
+    }
+
+    private func doneSending(on connection: NWConnection, keepAlive: Bool, leftover: Data) {
+        if keepAlive {
+            receiveHeader(on: connection, buffer: leftover)
+        } else {
+            connection.cancel()
+        }
+    }
+}
+
+enum HTTPBody: Sendable {
+    case data(Data)
+    case file(url: URL, offset: Int, length: Int)
+
+    var contentLength: Int {
+        switch self {
+        case .data(let data): return data.count
+        case .file(_, _, let length): return length
+        }
     }
 }
 
@@ -203,7 +303,6 @@ struct HTTPRequest: Sendable {
         headers["range"]
     }
 
-    /// HTTP/1.1 defaults to keep-alive unless the client asks to close.
     var wantsKeepAlive: Bool {
         let value = headers["connection"]?.lowercased() ?? "keep-alive"
         return !value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.contains("close")
@@ -245,12 +344,17 @@ struct HTTPRequest: Sendable {
 struct HTTPResponse: Sendable {
     var status: Int
     var headers: [String: String]
-    var body: Data
+    var body: HTTPBody
 
-    init(status: Int, headers: [String: String] = [:], body: Data) {
+    init(status: Int, headers: [String: String] = [:], body: HTTPBody) {
         self.status = status
         self.headers = headers
         self.body = body
+    }
+
+    /// Convenience for in-memory bodies.
+    init(status: Int, headers: [String: String] = [:], body: Data) {
+        self.init(status: status, headers: headers, body: .data(body))
     }
 
     static func json<T: Encodable>(_ value: T, status: Int = 200) -> HTTPResponse {
@@ -283,19 +387,7 @@ struct HTTPResponse: Sendable {
         )
     }
 
-    static func video(_ data: Data, contentType: String, status: Int = 200) -> HTTPResponse {
-        HTTPResponse(
-            status: status,
-            headers: [
-                "Content-Type": contentType,
-                "Accept-Ranges": "bytes",
-                "Cache-Control": "no-store",
-            ],
-            body: data
-        )
-    }
-
-    func serialize(keepAlive: Bool = false) -> Data {
+    func serializeHeaders(keepAlive: Bool) -> Data {
         let reason: String
         switch status {
         case 200: reason = "OK"
@@ -310,7 +402,7 @@ struct HTTPResponse: Sendable {
         }
         var headerMap = headers
         if headerMap["Content-Length"] == nil {
-            headerMap["Content-Length"] = String(body.count)
+            headerMap["Content-Length"] = String(body.contentLength)
         }
         if keepAlive {
             headerMap["Connection"] = "keep-alive"
@@ -323,8 +415,6 @@ struct HTTPResponse: Sendable {
             text += "\(k): \(v)\r\n"
         }
         text += "\r\n"
-        var data = Data(text.utf8)
-        data.append(body)
-        return data
+        return Data(text.utf8)
     }
 }

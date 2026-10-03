@@ -141,7 +141,9 @@ final class VideoPlayerViewController: UIViewController {
         ])
         let item = AVPlayerItem(asset: asset)
         // Larger forward buffer reduces stall/rebuffer loops on high-latency links.
-        item.preferredForwardBufferDuration = 15
+        item.preferredForwardBufferDuration = 30
+        // Soft-cap bitrate so Tailscale/cellular can keep up with 4K HEVC when possible.
+        item.preferredPeakBitRate = 8_000_000
 
         let player = AVPlayer(playerItem: item)
         player.automaticallyWaitsToMinimizeStalling = true

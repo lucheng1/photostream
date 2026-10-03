@@ -156,7 +156,11 @@ enum ByteRange {
 }
 
 enum VideoHTTP {
-    /// Build a 200/206 response by reading only the requested byte range from disk.
+    /// Max bytes per 206 response. Open-ended `bytes=0-` would otherwise try to push
+    /// an entire 4K movie in one reply, which stalls over Tailscale.
+    private static let maxChunkBytes = 4 * 1024 * 1024
+
+    /// Build a 200/206 response backed by a file region (streamed by HTTPServer).
     static func response(
         fileURL: URL,
         contentType: String,
@@ -181,46 +185,59 @@ enum VideoHTTP {
                 )
             }
 
+            let start: Int
+            let end: Int
             switch range {
             case .full:
-                let body = includeBody
-                    ? (try Data(contentsOf: fileURL, options: [.mappedIfSafe]))
-                    : Data()
-                var headers: [String: String] = [
-                    "Content-Type": contentType,
-                    "Accept-Ranges": "bytes",
-                    "Cache-Control": "private, max-age=3600",
-                ]
-                if !includeBody {
-                    headers["Content-Length"] = String(size)
-                }
-                return HTTPResponse(status: 200, headers: headers, body: body)
-
-            case .partial(let start, let end):
-                let length = end - start + 1
-                let body = includeBody
-                    ? (try readRange(fileURL: fileURL, start: start, length: length))
-                    : Data()
-                var headers: [String: String] = [
-                    "Content-Type": contentType,
-                    "Accept-Ranges": "bytes",
-                    "Content-Range": "bytes \(start)-\(end)/\(size)",
-                    "Cache-Control": "private, max-age=3600",
-                ]
-                if !includeBody {
-                    headers["Content-Length"] = String(length)
-                }
-                return HTTPResponse(status: 206, headers: headers, body: body)
+                start = 0
+                end = size > 0 ? size - 1 : 0
+            case .partial(let s, let e):
+                start = s
+                end = e
             }
+
+            guard size > 0 else {
+                return HTTPResponse(
+                    status: 200,
+                    headers: [
+                        "Content-Type": contentType,
+                        "Accept-Ranges": "bytes",
+                        "Content-Length": "0",
+                        "Cache-Control": "private, max-age=3600",
+                    ],
+                    body: Data()
+                )
+            }
+
+            let cappedEnd = min(end, start + maxChunkBytes - 1)
+            let length = cappedEnd - start + 1
+            let isPartial = start > 0 || cappedEnd < size - 1 || rangeHeader != nil
+
+            var headers: [String: String] = [
+                "Content-Type": contentType,
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "private, max-age=3600",
+            ]
+
+            if isPartial {
+                headers["Content-Range"] = "bytes \(start)-\(cappedEnd)/\(size)"
+            }
+
+            let body: HTTPBody
+            if includeBody {
+                body = .file(url: fileURL, offset: start, length: length)
+            } else {
+                headers["Content-Length"] = String(length)
+                body = .data(Data())
+            }
+
+            return HTTPResponse(
+                status: isPartial ? 206 : 200,
+                headers: headers,
+                body: body
+            )
         } catch {
             return .json(APIErrorBody(error: error.localizedDescription), status: 500)
         }
-    }
-
-    private static func readRange(fileURL: URL, start: Int, length: Int) throws -> Data {
-        let handle = try FileHandle(forReadingFrom: fileURL)
-        defer { try? handle.close() }
-        try handle.seek(toOffset: UInt64(start))
-        return try handle.read(upToCount: length) ?? Data()
     }
 }
