@@ -156,8 +156,8 @@ enum ByteRange {
 }
 
 enum VideoHTTP {
-    /// Max bytes per 206 response. Open-ended `bytes=0-` would otherwise try to push
-    /// an entire 4K movie in one reply, which stalls over Tailscale.
+    /// Max bytes per ranged 206 response. Open-ended `bytes=0-` would otherwise try
+    /// to push an entire 4K movie in one reply, which stalls over Tailscale.
     private static let maxChunkBytes = 4 * 1024 * 1024
 
     /// Build a 200/206 response backed by a file region (streamed by HTTPServer).
@@ -173,6 +173,38 @@ enum VideoHTTP {
                 return .json(APIErrorBody(error: "stat failed"), status: 500)
             }
             let size = fileSize.intValue
+
+            guard size > 0 else {
+                return HTTPResponse(
+                    status: 200,
+                    headers: [
+                        "Content-Type": contentType,
+                        "Accept-Ranges": "bytes",
+                        "Content-Length": "0",
+                        "Cache-Control": "private, max-age=3600",
+                    ],
+                    body: Data()
+                )
+            }
+
+            // No Range header → full 200 (streamed). Never emit an unsolicited 206;
+            // AVPlayer treats that as a hard failure ("unknown error").
+            guard let rangeHeader, !rangeHeader.isEmpty else {
+                var headers: [String: String] = [
+                    "Content-Type": contentType,
+                    "Accept-Ranges": "bytes",
+                    "Cache-Control": "private, max-age=3600",
+                ]
+                let body: HTTPBody
+                if includeBody {
+                    body = .file(url: fileURL, offset: 0, length: size)
+                } else {
+                    headers["Content-Length"] = String(size)
+                    body = .data(Data())
+                }
+                return HTTPResponse(status: 200, headers: headers, body: body)
+            }
+
             guard let range = ByteRange.parse(rangeHeader, fileSize: size) else {
                 return HTTPResponse(
                     status: 416,
@@ -190,38 +222,22 @@ enum VideoHTTP {
             switch range {
             case .full:
                 start = 0
-                end = size > 0 ? size - 1 : 0
+                end = size - 1
             case .partial(let s, let e):
                 start = s
                 end = e
             }
 
-            guard size > 0 else {
-                return HTTPResponse(
-                    status: 200,
-                    headers: [
-                        "Content-Type": contentType,
-                        "Accept-Ranges": "bytes",
-                        "Content-Length": "0",
-                        "Cache-Control": "private, max-age=3600",
-                    ],
-                    body: Data()
-                )
-            }
-
+            // Cap only when the client asked for a range (keeps Tailscale healthy).
             let cappedEnd = min(end, start + maxChunkBytes - 1)
             let length = cappedEnd - start + 1
-            let isPartial = start > 0 || cappedEnd < size - 1 || rangeHeader != nil
 
             var headers: [String: String] = [
                 "Content-Type": contentType,
                 "Accept-Ranges": "bytes",
+                "Content-Range": "bytes \(start)-\(cappedEnd)/\(size)",
                 "Cache-Control": "private, max-age=3600",
             ]
-
-            if isPartial {
-                headers["Content-Range"] = "bytes \(start)-\(cappedEnd)/\(size)"
-            }
 
             let body: HTTPBody
             if includeBody {
@@ -231,11 +247,7 @@ enum VideoHTTP {
                 body = .data(Data())
             }
 
-            return HTTPResponse(
-                status: isPartial ? 206 : 200,
-                headers: headers,
-                body: body
-            )
+            return HTTPResponse(status: 206, headers: headers, body: body)
         } catch {
             return .json(APIErrorBody(error: error.localizedDescription), status: 500)
         }

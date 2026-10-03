@@ -175,7 +175,8 @@ final class VideoPlayerViewController: UIViewController {
             playerController.view.isHidden = false
             player?.play()
         case .failed:
-            showError(error?.localizedDescription ?? "Could not play video")
+            let detail = error?.localizedDescription ?? "Could not play video"
+            showError(detail)
         case .unknown:
             break
         @unknown default:
