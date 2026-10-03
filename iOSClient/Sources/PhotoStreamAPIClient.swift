@@ -95,12 +95,16 @@ actor PhotoStreamAPIClient {
 
     /// Progressive-playback URL for AVPlayer. Token is in the query string because
     /// AVPlayer does not reliably send custom auth headers on range requests.
-    func streamingVideoURL(assetID: String) -> URL {
+    /// Pass `quality: .mobile` on cellular so the Mac serves a ≤1080p ~5.5 Mbps proxy.
+    func streamingVideoURL(assetID: String, quality: NetworkQuality = .wifi) -> URL {
         let encoded = AssetIDCoding.encode(assetID)
         var components = URLComponents(url: url("v1", "assets", encoded, "video"), resolvingAgainstBaseURL: false)!
         var items: [URLQueryItem] = []
         if let token {
             items.append(URLQueryItem(name: "token", value: token))
+        }
+        if quality == .mobile {
+            items.append(URLQueryItem(name: "quality", value: "mobile"))
         }
         components.queryItems = items.isEmpty ? nil : items
         return components.url!

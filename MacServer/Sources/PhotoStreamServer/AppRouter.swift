@@ -235,7 +235,14 @@ final class AppRouter: @unchecked Sendable {
                 return .json(APIErrorBody(error: "not a video"), status: 400)
             }
             do {
-                let (fileURL, contentType) = try await VideoExporter.fileURL(for: asset)
+                let (sourceURL, _) = try await VideoExporter.fileURL(for: asset)
+                let fileURL = try await Self.videoFile(
+                    sourceURL: sourceURL,
+                    quality: request.query["quality"]
+                )
+                let contentType = VideoExporter.mimeType(
+                    forExtension: fileURL.pathExtension.lowercased()
+                )
                 return VideoHTTP.response(
                     fileURL: fileURL,
                     contentType: contentType,
@@ -253,7 +260,11 @@ final class AppRouter: @unchecked Sendable {
                 return .json(APIErrorBody(error: "not a video"), status: 400)
             }
             do {
-                let fileURL = try await VideoExporter.prepareForStreaming(sourceURL: asset.fileURL)
+                let prepared = try await VideoExporter.prepareForStreaming(sourceURL: asset.fileURL)
+                let fileURL = try await Self.videoFile(
+                    sourceURL: prepared,
+                    quality: request.query["quality"]
+                )
                 let contentType = VideoExporter.mimeType(
                     forExtension: fileURL.pathExtension.lowercased()
                 )
@@ -267,5 +278,14 @@ final class AppRouter: @unchecked Sendable {
                 return .json(APIErrorBody(error: error.localizedDescription), status: 500)
             }
         }
+    }
+
+    /// `quality=mobile` → ≤1080p ~5.5 Mbps proxy for cellular / 5G streaming.
+    private static func videoFile(sourceURL: URL, quality: String?) async throws -> URL {
+        let normalized = quality?.lowercased()
+        if normalized == "mobile" || normalized == "5g" || normalized == "cellular" {
+            return try await VideoMobileProxy.fileURL(for: sourceURL)
+        }
+        return sourceURL
     }
 }

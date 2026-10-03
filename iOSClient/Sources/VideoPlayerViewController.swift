@@ -151,15 +151,24 @@ final class VideoPlayerViewController: UIViewController {
 
     private func startPlayback() async {
         statusLabel.isHidden = false
-        statusLabel.text = "Loading video…"
-        let streamURL = await client.streamingVideoURL(assetID: assetID)
+        let network = await NetworkQuality.current()
+        if network == .mobile {
+            statusLabel.text = "Preparing mobile stream…"
+        } else {
+            statusLabel.text = "Loading video…"
+        }
+
+        let streamURL = await client.streamingVideoURL(assetID: assetID, quality: network)
         let asset = AVURLAsset(url: streamURL, options: [
             AVURLAssetAllowsCellularAccessKey: true,
         ])
         let item = AVPlayerItem(asset: asset)
-        // Buffer ahead a bit, but don't wait to fill a huge window before starting.
-        item.preferredForwardBufferDuration = 8
-        // Do NOT set preferredPeakBitRate — a cap below the file's bitrate stalls 4K HEVC.
+        // Shorter buffer target on mobile proxy (~5.5 Mbps); a bit more on Wi‑Fi 4K.
+        item.preferredForwardBufferDuration = network == .mobile ? 4 : 8
+        // Soft cap only for the mobile proxy — never on original 4K (would stall).
+        if network == .mobile {
+            item.preferredPeakBitRate = 8_000_000
+        }
 
         let player = AVPlayer(playerItem: item)
         player.automaticallyWaitsToMinimizeStalling = true
