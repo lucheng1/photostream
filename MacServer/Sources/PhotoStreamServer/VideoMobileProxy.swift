@@ -5,14 +5,14 @@ import PhotoStreamShared
 
 /// On-demand mobile proxy for cellular / non-Wi‑Fi streaming.
 ///
-/// Target (3GPP TR 26.925 Full HD HEVC band): ~5–6 Mbps at ≤1080p — comfortable
-/// on typical 5G with headroom for Tailscale overhead. Prefers `ffmpeg` +
-/// VideoToolbox (usually faster than real-time); falls back to AVAssetExportSession.
+/// Target ~2.5 Mbps HEVC at ≤1080p for cellular / 5G (phone screens tolerate
+/// this well; smaller files mean less buffer fill and faster first encode).
+/// Prefers `ffmpeg` + VideoToolbox; falls back to AVAssetExportSession.
 enum VideoMobileProxy {
-    /// ~5.5 Mbps video — sweet spot for 1080p HEVC on 5G.
-    static let targetVideoBitRate = 5_500_000
+    /// ~2.5 Mbps video — lean 1080p HEVC for 5G / Tailscale.
+    static let targetVideoBitRate = 2_500_000
     static let maxEdge = 1920
-    static let audioBitRate = 128_000
+    static let audioBitRate = 96_000
 
     private static let jobs = MobileProxyJobs()
 
@@ -92,9 +92,9 @@ enum VideoMobileProxy {
                 "-i", source.path,
                 "-vf", "\(vf),format=yuv420p",
                 "-c:v", "h264_videotoolbox",
-                "-b:v", "6000000",
-                "-maxrate", "7200000",
-                "-bufsize", "12000000",
+                "-b:v", "3000000",
+                "-maxrate", "3600000",
+                "-bufsize", "6000000",
                 "-c:a", "aac",
                 "-b:a", "\(audioBitRate)",
                 "-ac", "2",

@@ -167,7 +167,7 @@ final class VideoPlayerViewController: UIViewController {
         item.preferredForwardBufferDuration = network == .mobile ? 4 : 8
         // Soft cap only for the mobile proxy — never on original 4K (would stall).
         if network == .mobile {
-            item.preferredPeakBitRate = 8_000_000
+            item.preferredPeakBitRate = 4_000_000
         }
 
         let player = AVPlayer(playerItem: item)
