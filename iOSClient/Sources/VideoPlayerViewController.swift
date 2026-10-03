@@ -2,8 +2,9 @@ import AVFoundation
 import AVKit
 import UIKit
 
-/// Full-screen video playback. Downloads to a local cache then plays — progressive
-/// HTTP streaming of 4K camera MOVs stalls/fails over Tailscale.
+/// Full-screen progressive HTTP streaming (Google Photos style).
+/// Server remuxes with fast-start so `moov` is near the front and byte-range
+/// requests can begin playback without downloading the whole file.
 final class VideoPlayerViewController: UIViewController {
     private let client: PhotoStreamAPIClient
     private let assetID: String
@@ -19,7 +20,6 @@ final class VideoPlayerViewController: UIViewController {
     private var endObserver: NSObjectProtocol?
     private var statusObservation: NSKeyValueObservation?
     private var stallObservation: NSKeyValueObservation?
-    private var localFileURL: URL?
 
     init(client: PhotoStreamAPIClient, assetID: String, placeholder: UIImage?) {
         self.client = client
@@ -150,27 +150,17 @@ final class VideoPlayerViewController: UIViewController {
     }
 
     private func startPlayback() async {
-        do {
-            statusLabel.isHidden = false
-            statusLabel.text = "Loading video…"
-            let localURL = try await client.downloadVideo(assetID: assetID) { [weak self] fraction in
-                Task { @MainActor in
-                    guard let self else { return }
-                    let pct = Int((fraction * 100).rounded())
-                    self.statusLabel.text = "Loading video… \(pct)%"
-                }
-            }
-            localFileURL = localURL
-            guard !Task.isCancelled else { return }
-            play(fileURL: localURL)
-        } catch {
-            showError(error.localizedDescription)
-        }
-    }
+        statusLabel.isHidden = false
+        statusLabel.text = "Loading video…"
+        let streamURL = await client.streamingVideoURL(assetID: assetID)
+        let asset = AVURLAsset(url: streamURL, options: [
+            AVURLAssetAllowsCellularAccessKey: true,
+        ])
+        let item = AVPlayerItem(asset: asset)
+        // Buffer ahead a bit, but don't wait to fill a huge window before starting.
+        item.preferredForwardBufferDuration = 8
+        // Do NOT set preferredPeakBitRate — a cap below the file's bitrate stalls 4K HEVC.
 
-    private func play(fileURL: URL) {
-        statusLabel.isHidden = true
-        let item = AVPlayerItem(url: fileURL)
         let player = AVPlayer(playerItem: item)
         player.automaticallyWaitsToMinimizeStalling = true
         player.actionAtItemEnd = .none
@@ -183,17 +173,21 @@ final class VideoPlayerViewController: UIViewController {
             }
         }
 
-        // If the item stalls (rare for local files), keep trying to resume.
         stallObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
             Task { @MainActor in
                 guard let self else { return }
-                if player.timeControlStatus == .waitingToPlayAtSpecifiedRate {
+                switch player.timeControlStatus {
+                case .waitingToPlayAtSpecifiedRate:
                     self.statusLabel.isHidden = false
                     self.statusLabel.text = "Buffering…"
                     self.spinner.startAnimating()
-                } else if player.timeControlStatus == .playing {
+                case .playing:
                     self.statusLabel.isHidden = true
                     self.spinner.stopAnimating()
+                case .paused:
+                    break
+                @unknown default:
+                    break
                 }
             }
         }

@@ -208,7 +208,8 @@ final class HTTPServer: @unchecked Sendable {
         keepAlive: Bool,
         leftover: Data
     ) {
-        let chunkSize = 256 * 1024
+        // Larger chunks cut syscall/round-trip overhead on fast LAN / Tailscale links.
+        let chunkSize = 1024 * 1024
         switch body {
         case .data(let data):
             if offset >= data.count {
@@ -231,34 +232,66 @@ final class HTTPServer: @unchecked Sendable {
                 doneSending(on: connection, keepAlive: keepAlive, leftover: leftover)
                 return
             }
-            let toRead = min(chunkSize, length - offset)
             do {
                 let handle = try FileHandle(forReadingFrom: url)
-                defer { try? handle.close() }
                 try handle.seek(toOffset: UInt64(fileOffset + offset))
-                let slice = try handle.read(upToCount: toRead) ?? Data()
-                // Short read before Content-Length is satisfied would desync keep-alive.
-                if slice.isEmpty {
-                    connection.cancel()
-                    return
-                }
-                connection.send(content: slice, completion: .contentProcessed { [weak self] error in
-                    guard let self else { return }
-                    if error != nil {
-                        connection.cancel()
-                        return
-                    }
-                    self.sendBody(
-                        .file(url: url, offset: fileOffset, length: length),
-                        on: connection,
-                        offset: offset + slice.count,
-                        keepAlive: keepAlive,
-                        leftover: leftover
-                    )
-                })
+                sendFileHandle(
+                    handle,
+                    remaining: length - offset,
+                    chunkSize: chunkSize,
+                    on: connection,
+                    keepAlive: keepAlive,
+                    leftover: leftover
+                )
             } catch {
                 connection.cancel()
             }
+        }
+    }
+
+    private func sendFileHandle(
+        _ handle: FileHandle,
+        remaining: Int,
+        chunkSize: Int,
+        on connection: NWConnection,
+        keepAlive: Bool,
+        leftover: Data
+    ) {
+        if remaining <= 0 {
+            try? handle.close()
+            doneSending(on: connection, keepAlive: keepAlive, leftover: leftover)
+            return
+        }
+        let toRead = min(chunkSize, remaining)
+        do {
+            let slice = try handle.read(upToCount: toRead) ?? Data()
+            if slice.isEmpty {
+                try? handle.close()
+                connection.cancel()
+                return
+            }
+            connection.send(content: slice, completion: .contentProcessed { [weak self] error in
+                guard let self else {
+                    try? handle.close()
+                    return
+                }
+                if error != nil {
+                    try? handle.close()
+                    connection.cancel()
+                    return
+                }
+                self.sendFileHandle(
+                    handle,
+                    remaining: remaining - slice.count,
+                    chunkSize: chunkSize,
+                    on: connection,
+                    keepAlive: keepAlive,
+                    leftover: leftover
+                )
+            })
+        } catch {
+            try? handle.close()
+            connection.cancel()
         }
     }
 
