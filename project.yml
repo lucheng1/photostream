@@ -29,15 +29,15 @@ targets:
       properties:
         CFBundleDisplayName: PhotoStream
         CFBundleIconName: AppIcon
-        CFBundleShortVersionString: "1.0.1"
-        CFBundleVersion: "3"
+        CFBundleShortVersionString: "1.0.2"
+        CFBundleVersion: "4"
         UILaunchScreen: {}
         NSLocalNetworkUsageDescription: PhotoStream finds your Mac Photos server on the local network.
         NSBonjourServices:
           - _photostream._tcp
-        # Cleartext HTTP for LAN + Tailscale (100.x is not covered by NSAllowsLocalNetworking alone).
+        # Only NSAllowsArbitraryLoads — pairing NSAllowsLocalNetworking with it makes
+        # iOS ignore ArbitraryLoads, which blocks Tailscale 100.x cleartext HTTP.
         NSAppTransportSecurity:
-          NSAllowsLocalNetworking: true
           NSAllowsArbitraryLoads: true
     scheme:
       testTargets: []
