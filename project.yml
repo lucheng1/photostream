@@ -33,6 +33,10 @@ targets:
         NSLocalNetworkUsageDescription: PhotoStream finds your Mac Photos server on the local network.
         NSBonjourServices:
           - _photostream._tcp
+        # Cleartext HTTP for LAN + Tailscale (100.x is not covered by NSAllowsLocalNetworking alone).
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSAllowsArbitraryLoads: true
     scheme:
       testTargets: []
       gatherCoverageData: false
