@@ -18,6 +18,7 @@ final class VideoPlayerViewController: UIViewController {
     private var player: AVPlayer?
     private var endObserver: NSObjectProtocol?
     private var statusObservation: NSKeyValueObservation?
+    private var stallObservation: NSKeyValueObservation?
     private var localFileURL: URL?
 
     init(client: PhotoStreamAPIClient, assetID: String, placeholder: UIImage?) {
@@ -139,6 +140,7 @@ final class VideoPlayerViewController: UIViewController {
 
     private func cleanup() {
         statusObservation = nil
+        stallObservation = nil
         if let observer = endObserver {
             NotificationCenter.default.removeObserver(observer)
         }
@@ -149,8 +151,15 @@ final class VideoPlayerViewController: UIViewController {
 
     private func startPlayback() async {
         do {
+            statusLabel.isHidden = false
             statusLabel.text = "Loading video…"
-            let localURL = try await client.downloadVideo(assetID: assetID)
+            let localURL = try await client.downloadVideo(assetID: assetID) { [weak self] fraction in
+                Task { @MainActor in
+                    guard let self else { return }
+                    let pct = Int((fraction * 100).rounded())
+                    self.statusLabel.text = "Loading video… \(pct)%"
+                }
+            }
             localFileURL = localURL
             guard !Task.isCancelled else { return }
             play(fileURL: localURL)
@@ -164,7 +173,7 @@ final class VideoPlayerViewController: UIViewController {
         let item = AVPlayerItem(url: fileURL)
         let player = AVPlayer(playerItem: item)
         player.automaticallyWaitsToMinimizeStalling = true
-        player.actionAtItemEnd = .pause
+        player.actionAtItemEnd = .none
         self.player = player
         playerController.player = player
 
@@ -174,12 +183,30 @@ final class VideoPlayerViewController: UIViewController {
             }
         }
 
+        // If the item stalls (rare for local files), keep trying to resume.
+        stallObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
+            Task { @MainActor in
+                guard let self else { return }
+                if player.timeControlStatus == .waitingToPlayAtSpecifiedRate {
+                    self.statusLabel.isHidden = false
+                    self.statusLabel.text = "Buffering…"
+                    self.spinner.startAnimating()
+                } else if player.timeControlStatus == .playing {
+                    self.statusLabel.isHidden = true
+                    self.spinner.stopAnimating()
+                }
+            }
+        }
+
         endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
             object: item,
             queue: .main
         ) { [weak player] _ in
-            player?.seek(to: .zero)
+            player?.seek(to: .zero) { finished in
+                guard finished else { return }
+                player?.play()
+            }
         }
     }
 

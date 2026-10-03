@@ -4,18 +4,26 @@ actor PhotoStreamAPIClient {
     private var baseURL: URL
     private var token: String?
     private let session: URLSession
+    private let videoSession: URLSession
 
     init(baseURL: URL, token: String? = nil) {
         self.baseURL = baseURL
         self.token = token
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 30
-        // Videos over Tailscale can take minutes; thumbs still finish quickly.
-        config.timeoutIntervalForResource = 600
+        config.timeoutIntervalForResource = 120
         config.httpMaximumConnectionsPerHost = 20
         config.httpShouldUsePipelining = true
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         self.session = URLSession(configuration: config)
+
+        let videoConfig = URLSessionConfiguration.ephemeral
+        // Tailscale can idle between chunks; keep the request timeout high.
+        videoConfig.timeoutIntervalForRequest = 120
+        videoConfig.timeoutIntervalForResource = 900
+        videoConfig.httpMaximumConnectionsPerHost = 4
+        videoConfig.requestCachePolicy = .reloadIgnoringLocalCacheData
+        self.videoSession = URLSession(configuration: videoConfig)
     }
 
     func update(baseURL: URL, token: String?) {
@@ -99,27 +107,81 @@ actor PhotoStreamAPIClient {
     }
 
     /// Download the full video to a local cache file (reliable over Tailscale).
-    func downloadVideo(assetID: String) async throws -> URL {
+    func downloadVideo(
+        assetID: String,
+        progress: (@Sendable (Double) -> Void)? = nil
+    ) async throws -> URL {
         let encoded = AssetIDCoding.encode(assetID)
         let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
             .appendingPathComponent("PhotoStreamVideos", isDirectory: true)
         try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
         let dest = cacheDir.appendingPathComponent(encoded).appendingPathExtension("mov")
-        if FileManager.default.fileExists(atPath: dest.path) {
-            return dest
-        }
+        let metaURL = cacheDir.appendingPathComponent(encoded).appendingPathExtension("size")
 
         var request = URLRequest(url: url("v1", "assets", encoded, "video"))
         applyAuth(&request)
-        request.timeoutInterval = 600
+        request.timeoutInterval = 900
 
-        let (tempURL, response) = try await session.download(for: request)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            let data = (try? Data(contentsOf: tempURL)) ?? Data()
-            try Self.throwIfNeeded(response: response, data: data)
+        // Reuse cache only when the on-disk size matches what we saved last time.
+        if let expectedData = try? Data(contentsOf: metaURL),
+           let expected = Int64(String(data: expectedData, encoding: .utf8) ?? ""),
+           expected > 0,
+           let attrs = try? FileManager.default.attributesOfItem(atPath: dest.path),
+           let fileSize = attrs[.size] as? NSNumber,
+           fileSize.int64Value == expected {
+            progress?(1)
+            return dest
         }
+
+        let session = videoSession
+        let (tempURL, http) = try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<(URL, HTTPURLResponse), Error>) in
+            final class ProgressBox: @unchecked Sendable {
+                var observation: NSKeyValueObservation?
+            }
+            let box = ProgressBox()
+            let task = session.downloadTask(with: request) { fileURL, response, error in
+                box.observation?.invalidate()
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                guard let fileURL,
+                      let http = response as? HTTPURLResponse else {
+                    continuation.resume(throwing: APIError.status(-1, "invalid video response"))
+                    return
+                }
+                continuation.resume(returning: (fileURL, http))
+            }
+            box.observation = task.progress.observe(\.fractionCompleted) { prog, _ in
+                progress?(prog.fractionCompleted)
+            }
+            task.resume()
+        }
+
+        if !(200..<300).contains(http.statusCode) {
+            let data = (try? Data(contentsOf: tempURL)) ?? Data()
+            try Self.throwIfNeeded(response: http, data: data)
+        }
+
+        let downloaded = (try? FileManager.default.attributesOfItem(atPath: tempURL.path)[.size] as? NSNumber)?
+            .int64Value ?? 0
+        let expected = http.expectedContentLength
+        if expected > 0, downloaded != expected {
+            try? FileManager.default.removeItem(at: tempURL)
+            throw APIError.status(
+                http.statusCode,
+                "incomplete download (\(downloaded)/\(expected) bytes)"
+            )
+        }
+        if downloaded <= 0 {
+            throw APIError.status(http.statusCode, "empty video download")
+        }
+
         try? FileManager.default.removeItem(at: dest)
         try FileManager.default.moveItem(at: tempURL, to: dest)
+        try? String(downloaded).data(using: .utf8)?.write(to: metaURL)
+        progress?(1)
         return dest
     }
 
