@@ -135,8 +135,11 @@ enum ByteRange {
         guard let header, header.lowercased().hasPrefix("bytes=") else { return .full }
         let spec = header.dropFirst("bytes=".count)
         // Support a single range only (what AVPlayer sends).
-        let part = spec.split(separator: ",").first.map(String.init) ?? String(spec)
-        let bounds = part.split(separator: "-", maxSplits: 1).map(String.init)
+        let part = spec.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: false)
+            .first.map(String.init) ?? String(spec)
+        // Must keep empty trailing/leading pieces so `bytes=0-` and `bytes=-500` parse.
+        let bounds = part.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+            .map(String.init)
         guard bounds.count == 2 else { return nil }
 
         if bounds[0].isEmpty {
